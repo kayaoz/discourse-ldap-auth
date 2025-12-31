@@ -26,7 +26,8 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
   end
 
   def after_authenticate(auth_options)
-    auth_result(auth_options.info)
+    # DEGISIKLIK 1: Sadece .info degil, tum paketi (ham veri dahil) gonderiyoruz
+    auth_result(auth_options)
   end
 
   def register_middleware(omniauth)
@@ -42,13 +43,37 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
           # In 0.3.0, we fixed a typo in the ldap_bind_dn config name. This fallback will be removed in a future version.
           bind_dn: SiteSetting.ldap_bind_dn.presence || SiteSetting.try(:ldap_bind_db),
           password: SiteSetting.ldap_password,
-          filter: SiteSetting.ldap_filter
+          filter: SiteSetting.ldap_filter,
+          # DEGISIKLIK 2: uemail verisini sunucudan ozellikle istiyoruz
+          attributes: ['uid', 'cn', 'sn', 'mail', 'uemail'],
+          mapping: { email: 'uemail' }
         )
       }
   end
 
   private
-  def auth_result(auth_info)
+  
+  # DEGISIKLIK 3: auth_info artik tum paketi temsil ediyor
+  def auth_result(auth)
+    # Paketi parcalara ayir
+    auth_info = auth.info
+    extra_info = auth.extra || {}
+    raw_info = extra_info[:raw_info] || {}
+
+    # DEGISIKLIK 4: Manuel Email Kurtarma Operasyonu
+    # Eger email bos geldiyse ve raw_info icinde uemail varsa, oradan al.
+    if (auth_info[:email].nil? || auth_info[:email].empty?) && raw_info['uemail']
+      Rails.logger.warn("LDAP: Standart email bos. 'uemail' alanindan veri kurtariliyor...")
+      
+      # Veri dizi (array) olarak gelirse ilkini al, degilse kendisini al
+      ldap_mail = raw_info['uemail'].kind_of?(Array) ? raw_info['uemail'].first : raw_info['uemail']
+      
+      if ldap_mail
+        auth_info[:email] = ldap_mail
+        Rails.logger.warn("LDAP: Email basariyla kurtarildi: #{ldap_mail}")
+      end
+    end
+
     case SiteSetting.ldap_user_create_mode
       when 'none'
         ldap_user = LDAPUser.new(auth_info)
@@ -68,12 +93,14 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
         fail_auth('Invalid option for ldap_user_create_mode setting.')
     end
   end
+
   def fail_auth(reason)
     result = Auth::Result.new
     result.failed = true
     result.failed_reason = reason
     result
   end
+
   def load_user_descriptions
     file_path = "#{File.expand_path(File.dirname(__FILE__))}/ldap_users.yml"
     return nil unless File.exist?(file_path)
