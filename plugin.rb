@@ -26,11 +26,29 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
   end
 
   def after_authenticate(auth_options)
+    # --- DEBUG BASLANGIC ---
+    puts "\n=========================================="
+    puts "=== LDAP DEBUG: after_authenticate BASLADI ==="
+    
+    # Gelen ham veriyi gorelim
+    if auth_options.extra && auth_options.extra[:raw_info]
+      puts ">> LDAP RAW INFO (Ham Veri): #{auth_options.extra[:raw_info].inspect}"
+    else
+      puts ">> LDAP RAW INFO: BULUNAMADI (Nil)"
+    end
+    
+    puts ">> LDAP INFO (Islemis Veri): #{auth_options.info.inspect}"
+    # --- DEBUG ARA ---
+
     # 1. Standart islemi calistir
     result = auth_result(auth_options)
 
+    puts ">> Standart Islem Sonucu (User): #{result.user ? result.user.username : 'NIL (Bulunamadi)'}"
+
     # 2. EMAIL ILE KURTARMA YAMASI (User nil ise devreye girer)
     if result.user.nil?
+      puts ">> KURTARMA MODU: Kullanici standart yolla gelmedi. Email kontrol ediliyor..."
+      
       # LDAP'tan gelen verileri kontrol et
       raw_info = auth_options.extra[:raw_info] if auth_options.extra
       
@@ -39,38 +57,68 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
       ldap_email ||= raw_info[:uemail] rescue nil # ODTU ozel alani
       ldap_email ||= raw_info[:mail] rescue nil
       
+      # Array gelirse ilkini al (bazen ["email@metu.edu.tr"] doner)
+      ldap_email = ldap_email.first if ldap_email.kind_of?(Array)
+      
       if ldap_email
-        puts "LDAP: Kullanici standart yolla bulunamadi. Email ile manuel araniyor: #{ldap_email}"
+        puts ">> KURTARMA MODU: LDAP Email yakalandi: #{ldap_email}"
+        puts ">> KURTARMA MODU: Veritabaninda araniyor..."
+        
         # Email ile kullaniciyi bul
         if user = User.find_by_email(ldap_email)
-          puts "LDAP: Kullanici bulundu ve eslestirildi: #{user.username}"
+          puts ">> KURTARMA BASARILI: Kullanici bulundu: #{user.username} (ID: #{user.id})"
           result.user = user
+          
+          # Eslestirmeyi veritabanina da yazalim ki bir dahakine ugrasmasin
+          # (Opsiyonel ama faydali)
+          # UserAssociatedAccount kaydi burada yapilabilir ama su anlik sadece session'a bagliyoruz.
         else
-           puts "LDAP: Bu email ile kayitli bir Discourse kullanicisi da YOK."
+           puts ">> KURTARMA BASARISIZ: Bu email (#{ldap_email}) ile kayitli Discourse kullanicisi YOK."
         end
       else
-        puts "LDAP: Email adresi LDAP verisinden okunamadi!"
+        puts ">> KURTARMA HATA: Email adresi hicbir yerden okunamadi!"
       end
     end
 
     # 3. CUSTOM FIELDS KAYDI (Sadece user varsa calisir)
     if result.user && auth_options.extra && auth_options.extra[:raw_info]
+      puts ">> CUSTOM FIELDS: Veri isleniyor..."
       raw = auth_options.extra[:raw_info]
       
-      # Helper lambda
+      # Helper lambda: Hem String ("major") hem Symbol (:major) destekler
       extract_val = ->(key) {
         val = raw[key] || raw[key.to_s]
-        val.respond_to?(:first) ? val.first : val
+        # Eger array ise ilkini al
+        final_val = val.respond_to?(:first) ? val.first : val
+        puts "   -> Veri Okuma [#{key}]: Ham: #{val.inspect} -> Sonuc: #{final_val.inspect}"
+        final_val
       }
 
       # Alanlari guncelle
-      result.user.custom_fields['ldap_type'] = extract_val.call(:type) if extract_val.call(:type)
-      result.user.custom_fields['ldap_minor'] = extract_val.call(:minor) if extract_val.call(:minor)
-      result.user.custom_fields['ldap_major'] = extract_val.call(:major) if extract_val.call(:major)
+      if val = extract_val.call(:type)
+        result.user.custom_fields['ldap_type'] = val
+      end
       
-      result.user.save_custom_fields
-      puts "LDAP: Custom fields guncellendi."
+      if val = extract_val.call(:minor)
+        result.user.custom_fields['ldap_minor'] = val
+      end
+      
+      if val = extract_val.call(:major)
+        result.user.custom_fields['ldap_major'] = val
+      end
+      
+      if result.user.save_custom_fields
+        puts ">> CUSTOM FIELDS: Basariyla kaydedildi."
+        puts ">> SON DURUM: #{result.user.custom_fields.slice('ldap_type', 'ldap_minor', 'ldap_major')}"
+      else
+        puts ">> CUSTOM FIELDS HATA: Kayit sirasinda hata olustu."
+      end
+    else
+      puts ">> CUSTOM FIELDS: Atlandi (User yok veya raw_info eksik)"
     end
+
+    puts "=== LDAP DEBUG: after_authenticate BITTI ==="
+    puts "==========================================\n"
 
     result
   end
@@ -90,7 +138,6 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
           password: SiteSetting.ldap_password,
           filter: SiteSetting.ldap_filter,
           # DEGISIKLIK 2: 'type', 'minor', 'major' alanlarini buraya EKLEDIK.
-          # Yoksa sunucu bu verileri gondermez!
           attributes: ['uid', 'cn', 'sn', 'mail', 'uemail', 'type', 'minor', 'major'],
           mapping: { email: 'uemail' }
         )
@@ -98,7 +145,7 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
   end
 
   private
-  
+   
   # DEGISIKLIK 3: auth_info artik tum paketi temsil ediyor
   def auth_result(auth)
     # Paketi parcalara ayir
@@ -106,7 +153,7 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
     extra_info = auth.extra || {}
     raw_info = extra_info[:raw_info] || {}
 
-    # DEGISIKLIK 4: Manuel Email Kurtarma Operasyonu
+    # DEGISIKLIK 4: Manuel Email Kurtarma Operasyonu (Creation oncesi)
     if (auth_info[:email].nil? || auth_info[:email].empty?) && raw_info['uemail']
       Rails.logger.warn("LDAP: Standart email bos. 'uemail' alanindan veri kurtariliyor...")
       
