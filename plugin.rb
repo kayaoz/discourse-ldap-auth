@@ -29,28 +29,62 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
     # DEGISIKLIK 1: Once standart islemi yap ve sonucu al
     result = auth_result(auth_options)
 
-    # --- ODTU YAMASI BASLANGIC ---
-    # Eger kullanici (result.user) varsa ve LDAP'tan gelen ham veri (raw_info) mevcutsa
-    if result.user && auth_options.extra && auth_options.extra[:raw_info]
-      raw = auth_options.extra[:raw_info]
-
-      # Verileri custom_fields'e kaydet
-      # LDAP genellikle verileri Array olarak doner, o yuzden .first kullaniyoruz
-      if raw[:type]
-         result.user.custom_fields['ldap_type'] = raw[:type].respond_to?(:first) ? raw[:type].first : raw[:type]
-      end
-      
-      if raw[:minor]
-         result.user.custom_fields['ldap_minor'] = raw[:minor].respond_to?(:first) ? raw[:minor].first : raw[:minor]
-      end
-      
-      if raw[:major]
-         result.user.custom_fields['ldap_major'] = raw[:major].respond_to?(:first) ? raw[:major].first : raw[:major]
-      end
-
-      result.user.save_custom_fields
+    # Loglama basliyor - Bunu konsoldan takip edecegiz
+    puts "--- LDAP DEBUG BASLANGIC ---"
+    
+    # Kullanici var mi kontrol et
+    if result.user
+       puts "LDAP: Kullanici bulundu ID: #{result.user.id}, Username: #{result.user.username}"
+    else
+       puts "LDAP: Kullanici (result.user) HENUZ YOK. Otomatik iliskilendirme yapilmamis olabilir."
     end
-    # --- ODTU YAMASI BITIS ---
+
+    # Ham veriyi kontrol et
+    if auth_options.extra && auth_options.extra[:raw_info]
+      raw = auth_options.extra[:raw_info]
+      puts "LDAP: Raw Data Geldi: #{raw.inspect}" # Butun veriyi gormek icin
+
+      # --- ODTU YAMASI (Guncellendi) ---
+      
+      # Helper: Hem String hem Symbol key desteklemesi icin kucuk bir lambda
+      # Deger bir Array ise ilk elemani alir, degilse kendisini alir.
+      extract_val = ->(key) {
+        val = raw[key] || raw[key.to_s] # :major veya "major" dene
+        val.respond_to?(:first) ? val.first : val
+      }
+
+      # Type Kayit
+      if val = extract_val.call(:type)
+         puts "LDAP: Type bulundu -> #{val}"
+         result.user.custom_fields['ldap_type'] = val
+      end
+      
+      # Minor Kayit
+      if val = extract_val.call(:minor)
+         puts "LDAP: Minor bulundu -> #{val}"
+         result.user.custom_fields['ldap_minor'] = val
+      end
+      
+      # Major Kayit
+      if val = extract_val.call(:major)
+         puts "LDAP: Major bulundu -> #{val}"
+         result.user.custom_fields['ldap_major'] = val
+      end
+
+      if result.user
+        if result.user.save_custom_fields
+            puts "LDAP: Custom fields basariyla kaydedildi."
+        else
+            puts "LDAP: Kayit sirasinda HATA olustu!"
+        end
+      end
+      # --- ODTU YAMASI BITIS ---
+
+    else
+      puts "LDAP: auth_options.extra[:raw_info] BOS dondu!"
+    end
+    
+    puts "--- LDAP DEBUG BITIS ---"
 
     result
   end
