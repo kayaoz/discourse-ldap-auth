@@ -26,8 +26,33 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
   end
 
   def after_authenticate(auth_options)
-    # DEGISIKLIK 1: Sadece .info degil, tum paketi (ham veri dahil) gonderiyoruz
-    auth_result(auth_options)
+    # DEGISIKLIK 1: Once standart islemi yap ve sonucu al
+    result = auth_result(auth_options)
+
+    # --- ODTU YAMASI BASLANGIC ---
+    # Eger kullanici (result.user) varsa ve LDAP'tan gelen ham veri (raw_info) mevcutsa
+    if result.user && auth_options.extra && auth_options.extra[:raw_info]
+      raw = auth_options.extra[:raw_info]
+
+      # Verileri custom_fields'e kaydet
+      # LDAP genellikle verileri Array olarak doner, o yuzden .first kullaniyoruz
+      if raw[:type]
+         result.user.custom_fields['ldap_type'] = raw[:type].respond_to?(:first) ? raw[:type].first : raw[:type]
+      end
+      
+      if raw[:minor]
+         result.user.custom_fields['ldap_minor'] = raw[:minor].respond_to?(:first) ? raw[:minor].first : raw[:minor]
+      end
+      
+      if raw[:major]
+         result.user.custom_fields['ldap_major'] = raw[:major].respond_to?(:first) ? raw[:major].first : raw[:major]
+      end
+
+      result.user.save_custom_fields
+    end
+    # --- ODTU YAMASI BITIS ---
+
+    result
   end
 
   def register_middleware(omniauth)
@@ -44,8 +69,9 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
           bind_dn: SiteSetting.ldap_bind_dn.presence || SiteSetting.try(:ldap_bind_db),
           password: SiteSetting.ldap_password,
           filter: SiteSetting.ldap_filter,
-          # DEGISIKLIK 2: uemail verisini sunucudan ozellikle istiyoruz
-          attributes: ['uid', 'cn', 'sn', 'mail', 'uemail'],
+          # DEGISIKLIK 2: 'type', 'minor', 'major' alanlarini buraya EKLEDIK.
+          # Yoksa sunucu bu verileri gondermez!
+          attributes: ['uid', 'cn', 'sn', 'mail', 'uemail', 'type', 'minor', 'major'],
           mapping: { email: 'uemail' }
         )
       }
@@ -61,11 +87,9 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
     raw_info = extra_info[:raw_info] || {}
 
     # DEGISIKLIK 4: Manuel Email Kurtarma Operasyonu
-    # Eger email bos geldiyse ve raw_info icinde uemail varsa, oradan al.
     if (auth_info[:email].nil? || auth_info[:email].empty?) && raw_info['uemail']
       Rails.logger.warn("LDAP: Standart email bos. 'uemail' alanindan veri kurtariliyor...")
       
-      # Veri dizi (array) olarak gelirse ilkini al, degilse kendisini al
       ldap_mail = raw_info['uemail'].kind_of?(Array) ? raw_info['uemail'].first : raw_info['uemail']
       
       if ldap_mail
