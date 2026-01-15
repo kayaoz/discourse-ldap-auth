@@ -1,8 +1,7 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication.
-# version: 0.8.0
-# authors: Jon Bake <jonmbake@gmail.com>
+# about: A plugin to provide ldap authentication with Rule-Based Group Sync
+# version: 2.0.0
 
 enabled_site_setting :ldap_enabled
 
@@ -28,99 +27,165 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
   def after_authenticate(auth_options)
     # --- DEBUG BASLANGIC ---
     puts "\n=========================================="
-    puts "=== LDAP DEBUG: after_authenticate BASLADI ==="
+    puts "=== LDAP AUTH BASLADI ==="
     
-    # Gelen ham veriyi gorelim
-    if auth_options.extra && auth_options.extra[:raw_info]
-      puts ">> LDAP RAW INFO (Ham Veri): #{auth_options.extra[:raw_info].inspect}"
-    else
-      puts ">> LDAP RAW INFO: BULUNAMADI (Nil)"
-    end
-    
-    puts ">> LDAP INFO (Islemis Veri): #{auth_options.info.inspect}"
-    # --- DEBUG ARA ---
-
     # 1. Standart islemi calistir
     result = auth_result(auth_options)
 
-    puts ">> Standart Islem Sonucu (User): #{result.user ? result.user.username : 'NIL (Bulunamadi)'}"
-
-    # 2. EMAIL ILE KURTARMA YAMASI (User nil ise devreye girer)
-    if result.user.nil?
-      puts ">> KURTARMA MODU: Kullanici standart yolla gelmedi. Email kontrol ediliyor..."
-      
-      # LDAP'tan gelen verileri kontrol et
-      raw_info = auth_options.extra[:raw_info] if auth_options.extra
-      
-      # Email adresini farkli alanlardan yakalamaya calis
-      ldap_email = auth_options.info[:email] rescue nil
-      ldap_email ||= raw_info[:uemail] rescue nil # ODTU ozel alani
-      ldap_email ||= raw_info[:mail] rescue nil
-      
-      # Array gelirse ilkini al (bazen ["email@metu.edu.tr"] doner)
-      ldap_email = ldap_email.first if ldap_email.kind_of?(Array)
-      
-      if ldap_email
-        puts ">> KURTARMA MODU: LDAP Email yakalandi: #{ldap_email}"
-        puts ">> KURTARMA MODU: Veritabaninda araniyor..."
-        
-        # Email ile kullaniciyi bul
-        if user = User.find_by_email(ldap_email)
-          puts ">> KURTARMA BASARILI: Kullanici bulundu: #{user.username} (ID: #{user.id})"
-          result.user = user
-          
-          # Eslestirmeyi veritabanina da yazalim ki bir dahakine ugrasmasin
-          # (Opsiyonel ama faydali)
-          # UserAssociatedAccount kaydi burada yapilabilir ama su anlik sadece session'a bagliyoruz.
-        else
-           puts ">> KURTARMA BASARISIZ: Bu email (#{ldap_email}) ile kayitli Discourse kullanicisi YOK."
-        end
-      else
-        puts ">> KURTARMA HATA: Email adresi hicbir yerden okunamadi!"
-      end
+    # 2. Kullanici yoksa (ilk giris hatasi vs) islem yapma
+    unless result.user
+      puts ">> HATA: Kullanici bulunamadigi icin islem yapilamadi."
+      return result
     end
 
-    # 3. CUSTOM FIELDS KAYDI (Sadece user varsa calisir)
-    if result.user && auth_options.extra && auth_options.extra[:raw_info]
-      puts ">> CUSTOM FIELDS: Veri isleniyor..."
-      raw = auth_options.extra[:raw_info]
+    # 3. LDAP Verilerini Al ve Custom Fields Guncelle
+    if auth_options.extra && auth_options.extra[:raw_info]
+      raw_info = auth_options.extra[:raw_info]
       
-      # Helper lambda: Hem String ("major") hem Symbol (:major) destekler
-      extract_val = ->(key) {
-        val = raw[key] || raw[key.to_s]
-        # Eger array ise ilkini al
-        final_val = val.respond_to?(:first) ? val.first : val
-        puts "   -> Veri Okuma [#{key}]: Ham: #{val.inspect} -> Sonuc: #{final_val.inspect}"
-        final_val
+      # Helper: Veriyi guvenli okuma
+      get_val = ->(key) {
+        val = raw_info[key] || raw_info[key.to_s]
+        val.respond_to?(:first) ? val.first : val
       }
-
-      # Alanlari guncelle
-      if val = extract_val.call(:type)
-        result.user.custom_fields['ldap_type'] = val
-      end
       
-      if val = extract_val.call(:minor)
-        result.user.custom_fields['ldap_minor'] = val
-      end
+      # Custom Fields Kaydi
+      result.user.custom_fields['ldap_type']  = get_val.call(:type).to_s
+      result.user.custom_fields['ldap_major'] = get_val.call(:major).to_s
+      result.user.custom_fields['ldap_minor'] = get_val.call(:minor).to_s
       
-      if val = extract_val.call(:major)
-        result.user.custom_fields['ldap_major'] = val
-      end
-      
-      if result.user.save_custom_fields
-        puts ">> CUSTOM FIELDS: Basariyla kaydedildi."
-        puts ">> SON DURUM: #{result.user.custom_fields.slice('ldap_type', 'ldap_minor', 'ldap_major')}"
-      else
-        puts ">> CUSTOM FIELDS HATA: Kayit sirasinda hata olustu."
-      end
-    else
-      puts ">> CUSTOM FIELDS: Atlandi (User yok veya raw_info eksik)"
+      result.user.save_custom_fields
+      puts ">> Custom Fields Guncellendi: Type=#{result.user.custom_fields['ldap_type']}, Major=#{result.user.custom_fields['ldap_major']}"
     end
 
-    puts "=== LDAP DEBUG: after_authenticate BITTI ==="
+    # 4. GRUP SENKRONIZASYONU (Sizin Kodunuz)
+    sync_groups_based_on_rules(result.user)
+
+    puts "=== LDAP AUTH BITTI ==="
     puts "==========================================\n"
 
     result
+  end
+
+  # --- SIZIN VERDIGINIZ MANTIK BURADA ---
+  def sync_groups_based_on_rules(user)
+    puts ">> [LDAP Group Sync] Kurallar calistiriliyor..."
+
+    # Kullanici verilerini al
+    u_type  = user.custom_fields['ldap_type']
+    u_minor = user.custom_fields['ldap_minor']
+    u_major = user.custom_fields['ldap_major']
+
+    # KURALLAR LISTESI (Verdiginiz koddan aynen alindi)
+    rules = [
+      # A-OGRENCI-DUYURU (16 veya 4 veya 25 olsun)
+      { group: "A-OGRENCI-DUYURU", type: { allow: [16, 4, 25] }, minor: nil, major: nil },
+      
+      # LISANS, YUKSEK LISANS, DOKTORA
+      { group: "LISANS-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['bs'] }, major: nil },
+      { group: "YUKSEKLISANS-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['ms'] }, major: nil },
+      { group: "DOKTORA-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['phd'] }, major: nil },
+
+      # GENEL-DUYURU
+      { group: "GENEL-DUYURU", type: nil, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
+      { group: "GENEL-DUYURU", type: nil, minor: { allow: ['adm', 'dns'] }, major: { deny: ['eis'] } },
+      { group: "GENEL-DUYURU", type: nil, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
+
+      # A-OGR-UYE-DUYURU
+      { 
+        group: "A-OGR-UYE-DUYURU", 
+        type: { deny: [27, 2, 3, 33] }, 
+        minor: { allow: ['aca'] }, 
+        major: { deny: ['eis'] } 
+      },
+
+      # A-OGR-ELM-DUYURU
+      { 
+        group: "A-OGR-ELM-DUYURU", 
+        type: { deny: [27, 2, 3, 33] }, 
+        minor: { allow: ['aca'] }, 
+        major: { deny: ['eis'] } 
+      },
+      { 
+        group: "A-OGR-ELM-DUYURU", 
+        type: { deny: [27] }, 
+        minor: { allow: ['rsc'] }, 
+        major: { deny: ['eis'] } 
+      },
+
+      # T-OGR-UYE-DUYURU
+      { 
+        group: "T-OGR-UYE-DUYURU", 
+        type: { deny: [27, 2, 3, 33] }, 
+        minor: { allow: ['aca'] }, 
+        major: { deny: ['eis'] } 
+      },
+
+      # T-OGR-ELM-DUYURU
+      { 
+        group: "T-OGR-ELM-DUYURU", 
+        type: { deny: [27, 2, 3, 33] }, 
+        minor: { allow: ['aca'] }, 
+        major: { deny: ['eis'] } 
+      },
+      { 
+        group: "T-OGR-ELM-DUYURU", 
+        type: { deny: [27] }, 
+        minor: { allow: ['rsc'] }, 
+        major: { deny: ['eis'] } 
+      },
+
+      # DIGER GRUPLAR
+      { group: "ARAS-GOR-DUYURU", type: nil, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
+      { group: "OGR-UYE-DUYURU", type: nil, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
+      { group: "OGRENCI-DUYURU", type: { allow: [16, 4, 25, 26, 42] }, minor: nil, major: nil },
+      { group: "LISANSUSTU-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['ms', 'phd'] }, major: nil },
+      { group: "EMEKLI-DUYURU", type: { allow: [28] }, minor: nil, major: nil },
+      { group: "AKADEMIK-EMEKLI-DUYURU", type: { allow: [28] }, minor: { allow: ['aca'] }, major: nil }
+    ]
+
+    rules.each do |rule|
+      t_allow = rule[:type] ? rule[:type][:allow] : nil
+      t_deny  = rule[:type] ? rule[:type][:deny] : nil
+
+      m_allow = rule[:minor] ? rule[:minor][:allow] : nil
+      m_deny  = rule[:minor] ? rule[:minor][:deny] : nil
+
+      j_allow = rule[:major] ? rule[:major][:allow] : nil
+      j_deny  = rule[:major] ? rule[:major][:deny] : nil
+
+      match_type = check_match(u_type, t_allow, t_deny)
+      match_minor = check_match(u_minor, m_allow, m_deny)
+      match_major = check_match(u_major, j_allow, j_deny)
+
+      if match_type && match_minor && match_major
+        # Grubu bul veya olustur
+        group = Group.find_or_create_by(name: rule[:group])
+        
+        unless group.users.include?(user)
+          group.add(user)
+          group.save
+          puts ">> [LDAP Group Sync] EKLE: #{user.username} -> #{rule[:group]} grubuna eklendi."
+        end
+      end
+    end
+  end
+
+  # YARDIMCI METOT: Check Match (Verdiginiz kod)
+  def check_match(user_value, allowed_list, excluded_list)
+    return true if allowed_list.nil? && excluded_list.nil?
+    return false if user_value.nil?
+
+    user_values = user_value.is_a?(Array) ? user_value.map(&:to_s) : [user_value.to_s]
+
+    if excluded_list
+      return false unless (user_values & excluded_list.map(&:to_s)).empty?
+    end
+
+    if allowed_list
+      return (user_values & allowed_list.map(&:to_s)).any?
+    end
+
+    return true
   end
 
   def register_middleware(omniauth)
@@ -133,11 +198,10 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
           method: SiteSetting.ldap_method,
           base: SiteSetting.ldap_base,
           uid: SiteSetting.ldap_uid,
-          # In 0.3.0, we fixed a typo in the ldap_bind_dn config name. This fallback will be removed in a future version.
           bind_dn: SiteSetting.ldap_bind_dn.presence || SiteSetting.try(:ldap_bind_db),
           password: SiteSetting.ldap_password,
           filter: SiteSetting.ldap_filter,
-          # DEGISIKLIK 2: 'type', 'minor', 'major' alanlarini buraya EKLEDIK.
+          # Custom field icin gerekli alanlar
           attributes: ['uid', 'cn', 'sn', 'mail', 'uemail', 'type', 'minor', 'major'],
           mapping: { email: 'uemail' }
         )
@@ -146,43 +210,48 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
 
   private
    
-  # DEGISIKLIK 3: auth_info artik tum paketi temsil ediyor
   def auth_result(auth)
-    # Paketi parcalara ayir
     auth_info = auth.info
     extra_info = auth.extra || {}
     raw_info = extra_info[:raw_info] || {}
 
-    # DEGISIKLIK 4: Manuel Email Kurtarma Operasyonu (Creation oncesi)
-    if (auth_info[:email].nil? || auth_info[:email].empty?) && raw_info['uemail']
-      Rails.logger.warn("LDAP: Standart email bos. 'uemail' alanindan veri kurtariliyor...")
-      
-      ldap_mail = raw_info['uemail'].kind_of?(Array) ? raw_info['uemail'].first : raw_info['uemail']
-      
-      if ldap_mail
-        auth_info[:email] = ldap_mail
-        Rails.logger.warn("LDAP: Email basariyla kurtarildi: #{ldap_mail}")
-      end
-    end
+    # --- DEBUG: GELEN VERIYI LOGA BAS ---
+    puts "\n--------------------------------------------------"
+    puts "LDAP DEBUG: auth_result Calisiyor..."
+    puts "LDAP DEBUG: Gelen Raw Info Keys: #{raw_info.keys}"
+    puts "LDAP DEBUG: Ornek Veri (type): #{raw_info['type'] || raw_info[:type]}"
+    puts "LDAP DEBUG: Ornek Veri (memberof): #{raw_info['memberof'] || raw_info[:memberof]}"
+    puts "--------------------------------------------------\n"
+    # ------------------------------------
 
-    case SiteSetting.ldap_user_create_mode
-      when 'none'
-        ldap_user = LDAPUser.new(auth_info)
-        ldap_user.account_exists? ? ldap_user.auth_result : fail_auth('User account does not exist.')
-      when 'list'
-        user_descriptions = load_user_descriptions
-        return fail_auth('List of users must be provided when ldap_user_create_mode setting is set to \'list\'.') if user_descriptions.nil?
-        #match on email
-        match = user_descriptions.find { |ud|  auth_info[:email].casecmp(ud[:email]) == 0 }
-        return fail_auth('User with email is not listed in LDAP user list.') if match.nil?
-        match[:nickname] = match[:username] || auth_info[:nickname]
-        match[:name] = match[:name] || auth_info[:name]
-        LDAPUser.new(match).auth_result
-      when 'auto'
-        LDAPUser.new(auth_info).auth_result
-      else
-        fail_auth('Invalid option for ldap_user_create_mode setting.')
+    # Email Kurtarma
+    if (auth_info[:email].nil? || auth_info[:email].empty?) && raw_info['uemail']
+      ldap_mail = raw_info['uemail'].kind_of?(Array) ? raw_info['uemail'].first : raw_info['uemail']
+      auth_info[:email] = ldap_mail if ldap_mail
+      puts "LDAP DEBUG: Email 'uemail' alanindan kurtarildi: #{ldap_mail}"
     end
+    
+    # Kullaniciyi bulma
+    result = Auth::Result.new
+    if auth.info[:email] && user = User.find_by_email(auth.info[:email])
+        result.user = user
+        puts "LDAP DEBUG: Kullanici email ile bulundu: #{user.username}"
+    end
+    
+    if result.user.nil?
+        puts "LDAP DEBUG: Kullanici bulunamadi, yaratma modu: #{SiteSetting.ldap_user_create_mode}"
+        case SiteSetting.ldap_user_create_mode
+        when 'auto'
+            result = LDAPUser.new(auth_info).auth_result
+        when 'none'
+            ldap_user = LDAPUser.new(auth_info)
+            ldap_user.account_exists? ? ldap_user.auth_result : fail_auth('User account does not exist.')
+        when 'list'
+             fail_auth('List mode not fully implemented.')
+        end
+    end
+    
+    result
   end
 
   def fail_auth(reason)
