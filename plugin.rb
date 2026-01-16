@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with Rule-Based Group Sync & Email Fix
-# version: 2.2.0
+# about: A plugin to provide ldap authentication with Rule-Based Group Sync & Force Email
+# version: 3.0.0
 
 enabled_site_setting :ldap_enabled
 
@@ -28,13 +28,12 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
   # 1. GIRIS SONRASI ISLEMLER (AFTER AUTHENTICATE)
   # =========================================================
   def after_authenticate(auth_options)
-    puts "\n=========================================="
-    puts "=== LDAP AUTH BASLADI (v2.2 Email Fix) ==="
+    Rails.logger.warn("LDAP_LOG: === after_authenticate BASLADI (v3.0) ===")
     
     # 1. Auth sonucunu al
     result = auth_result(auth_options)
 
-    # 2. LDAP Verisini Standart Hash'e Cevir (Guvenli Mod)
+    # 2. LDAP Verisini Standart Hash'e Cevir
     raw_info = {}
     if auth_options.extra && auth_options.extra[:raw_info]
       data = auth_options.extra[:raw_info]
@@ -45,91 +44,85 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
       end
     end
 
-    # Helper: Veriyi guvenli okuma
+    # Helper: Veri okuma
     get_val = ->(key) {
       val = raw_info[key] || raw_info[key.to_s]
       val.respond_to?(:first) ? val.first : val
     }
 
-    # =========================================================
-    # FIX: FORCE EMAIL (E-POSTA ZORLAMA YAMASI)
-    # =========================================================
-    # Eger sonuc donduyse ama email bos ise veya kullanici yaratilacaksa
-    if result.email.nil? || result.email.empty?
-      puts ">> UYARI: Result objesinde email bos! Manuel kurtarma deneniyor..."
-      
-      # uemail alanini raw_info'dan cek
-      recovered_email = get_val.call(:uemail)
-      
-      # Eger uemail yoksa, 'mail' alanini dene
-      recovered_email ||= get_val.call(:mail)
+    # Debug: E-posta durumu
+    Rails.logger.warn("LDAP_LOG: Result Email Durumu: #{result.email.inspect}")
+    Rails.logger.warn("LDAP_LOG: Gelen Raw Keys: #{raw_info.keys rescue 'yok'}")
 
-      if recovered_email && !recovered_email.to_s.empty?
-        result.email = recovered_email.to_s
+    # =========================================================
+    # ACIL YAMA: Eger result.email hala bossa, burada zorla doldur
+    # =========================================================
+    if result.email.nil? || result.email.empty?
+      Rails.logger.warn("LDAP_LOG: UYARI! Email bos. Manuel kurtarma deneniyor...")
+      
+      candidate_email = get_val.call(:uemail) || get_val.call(:mail)
+      
+      if candidate_email && !candidate_email.to_s.empty?
+        result.email = candidate_email.to_s
         result.email_valid = true
-        puts ">> FIX: Email, result objesine ZORLA yazildi: #{result.email}"
+        Rails.logger.warn("LDAP_LOG: KURTARILDI! Email result'a zorla yazildi: #{result.email}")
       else
-        puts ">> FIX HATA: Email hicbir yerden kurtarilamadi!"
+        Rails.logger.warn("LDAP_LOG: KRITIK HATA! Email hicbir yerden bulunamadi.")
       end
     end
-    # =========================================================
 
-    # 3. Kullanici varsa Custom Fields ve Gruplari Guncelle
+    # 3. Kullanici Varsa -> Gruplari ve Alanlari Guncelle
     if result.user
-      # Custom Fields Kaydi
+      # Custom Fields
       result.user.custom_fields['ldap_type']  = get_val.call(:type).to_s
       result.user.custom_fields['ldap_major'] = get_val.call(:major).to_s
       result.user.custom_fields['ldap_minor'] = get_val.call(:minor).to_s
-        
       result.user.save_custom_fields
-      puts ">> Custom Fields Guncellendi."
+      
+      Rails.logger.warn("LDAP_LOG: Custom fields guncellendi.")
 
-      # GRUP SENKRONIZASYONU
+      # Grup Senkronizasyonu
       sync_groups_based_on_rules(result.user)
     else
-      puts ">> BILGI: Yeni kullanici kaydi icin form dolduruluyor (User nil)."
+      Rails.logger.warn("LDAP_LOG: Kullanici henuz olusmadi (User=nil). Kayit ekranina yonlendiriliyor.")
     end
 
-    puts "=== LDAP AUTH BITTI ==="
-    puts "==========================================\n"
-
+    Rails.logger.warn("LDAP_LOG: === after_authenticate BITTI ===")
     result
   end
 
   # =========================================================
-  # 2. GRUP SENKRONIZASYON MANTIGI (RULES ENGINE)
+  # 2. GRUP SENKRONIZASYON MANTIGI
   # =========================================================
   def sync_groups_based_on_rules(user)
-    puts ">> [LDAP Group Sync] Kurallar calistiriliyor..."
+    Rails.logger.warn("LDAP_LOG: Grup kurallari calistiriliyor...")
 
     u_type  = user.custom_fields['ldap_type']
     u_minor = user.custom_fields['ldap_minor']
     u_major = user.custom_fields['ldap_major']
 
-    # KURALLAR LISTESI
     rules = [
-      # A-OGRENCI-DUYURU
       { group: "A-OGRENCI-DUYURU", type: { allow: [16, 4, 25] }, minor: nil, major: nil },
-      
-      # LISANS / YUKSEK / DOKTORA
       { group: "LISANS-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['bs'] }, major: nil },
       { group: "YUKSEKLISANS-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['ms'] }, major: nil },
       { group: "DOKTORA-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['phd'] }, major: nil },
-
-      # GENEL-DUYURU
+      
+      # GENEL GRUPLAR
       { group: "GENEL-DUYURU", type: nil, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
       { group: "GENEL-DUYURU", type: nil, minor: { allow: ['adm', 'dns'] }, major: { deny: ['eis'] } },
       { group: "GENEL-DUYURU", type: nil, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
 
-      # PERSONEL GRUPLARI
+      # PERSONEL
       { group: "A-OGR-UYE-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
       { group: "A-OGR-ELM-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
       { group: "A-OGR-ELM-DUYURU", type: { deny: [27] }, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
+      
+      # TEKNIK
       { group: "T-OGR-UYE-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
       { group: "T-OGR-ELM-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
       { group: "T-OGR-ELM-DUYURU", type: { deny: [27] }, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
 
-      # DIGERLERI
+      # DIGER
       { group: "ARAS-GOR-DUYURU", type: nil, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
       { group: "OGR-UYE-DUYURU", type: nil, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
       { group: "OGRENCI-DUYURU", type: { allow: [16, 4, 25, 26, 42] }, minor: nil, major: nil },
@@ -138,7 +131,6 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
       { group: "AKADEMIK-EMEKLI-DUYURU", type: { allow: [28] }, minor: { allow: ['aca'] }, major: nil }
     ]
 
-    # Kural Isletme
     rules.each do |rule|
       match_type  = check_match(u_type, rule[:type] ? rule[:type][:allow] : nil, rule[:type] ? rule[:type][:deny] : nil)
       match_minor = check_match(u_minor, rule[:minor] ? rule[:minor][:allow] : nil, rule[:minor] ? rule[:minor][:deny] : nil)
@@ -149,7 +141,7 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
         unless group.users.include?(user)
           group.add(user)
           group.save
-          puts ">> [LDAP Group Sync] EKLE: #{user.username} -> #{rule[:group]}"
+          Rails.logger.warn("LDAP_LOG: [Group Sync] EKLE: #{user.username} -> #{rule[:group]}")
         end
       end
     end
@@ -169,7 +161,7 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
   end
 
   # =========================================================
-  # 3. CONFIG MIDDLEWARE
+  # 3. MIDDLEWARE CONFIG
   # =========================================================
   def register_middleware(omniauth)
     omniauth.configure{ |c| c.form_css = File.read(File.expand_path("../css/form.css", __FILE__)) }
@@ -193,48 +185,61 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
   private
    
   # =========================================================
-  # 4. AUTH RESULT (Temel Islem)
+  # 4. AUTH RESULT (ÖZEL)
   # =========================================================
   def auth_result(auth)
-    auth_info = auth.info
-    extra_info = auth.extra || {}
-    
-    # Raw Info'yu guvenli sekilde Hash'e cevir
+    # 1. Gelen ham veriyi hash'e cevir
     raw_info = {}
-    if extra_info[:raw_info]
-        if extra_info[:raw_info].respond_to?(:to_hash)
-            raw_info = extra_info[:raw_info].to_hash
-        elsif extra_info[:raw_info].kind_of?(Hash)
-            raw_info = extra_info[:raw_info]
-        end
-    end
-
-    # Email Kurtarma (uemail) - Array donusumunu garantiye al
-    if (auth_info[:email].nil? || auth_info[:email].empty?)
-      uemail_val = raw_info['uemail'] || raw_info[:uemail]
-      if uemail_val
-        ldap_mail = uemail_val.kind_of?(Array) ? uemail_val.first : uemail_val
-        if ldap_mail
-            auth_info[:email] = ldap_mail
-        end
+    if auth.extra && auth.extra[:raw_info]
+      data = auth.extra[:raw_info]
+      if data.respond_to?(:to_hash)
+        raw_info = data.to_hash
+      elsif data.kind_of?(Hash)
+        raw_info = data
       end
     end
+
+    # 2. ODTU YAMASI: auth.info[:email] bos ise uemail'den doldur
+    # Bu adim kritik! result objesi olusmadan ONCE yapilmali.
+    if auth.info[:email].nil? || auth.info[:email].to_s.empty?
+       # uemail Array veya String olabilir
+       uemail_val = raw_info['uemail'] || raw_info[:uemail]
+       
+       if uemail_val
+         # Array ise ilkini al
+         final_email = uemail_val.kind_of?(Array) ? uemail_val.first : uemail_val
+         if final_email && !final_email.to_s.empty?
+            auth.info[:email] = final_email.to_s
+            Rails.logger.warn("LDAP_LOG: (auth_result) Email 'uemail' alanindan auth.info'ya kopyalandi: #{final_email}")
+         end
+       end
+    end
     
+    # 3. Standart Discourse Akisi
     result = Auth::Result.new
+    
+    # Kullaniciyi email ile bulmayi dene
     if auth.info[:email] && user = User.find_by_email(auth.info[:email])
         result.user = user
     end
     
+    # Kullanici yoksa olusturma mantigi
     if result.user.nil?
         case SiteSetting.ldap_user_create_mode
         when 'auto'
-            result = LDAPUser.new(auth_info).auth_result
+            result = LDAPUser.new(auth.info).auth_result
         when 'none'
-            ldap_user = LDAPUser.new(auth_info)
+            ldap_user = LDAPUser.new(auth.info)
             ldap_user.account_exists? ? ldap_user.auth_result : fail_auth('User account does not exist.')
         when 'list'
              fail_auth('List mode not implemented.')
         end
+    end
+    
+    # 4. SON KONTROL: Eger result donuyor ama email eksikse, auth.info'dan tekrar zorla
+    if (result.email.nil? || result.email.empty?) && auth.info[:email]
+        result.email = auth.info[:email]
+        result.email_valid = true
     end
     
     result
