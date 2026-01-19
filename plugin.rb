@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with Robust Group Sync (Case Insensitive)
-# version: 4.1.0
+# about: A plugin to provide ldap authentication with First-Login Group Sync (v5.0)
+# version: 5.0.0
 
 enabled_site_setting :ldap_enabled
 
@@ -14,71 +14,12 @@ require_relative 'lib/omniauth-ldap/adaptor'
 require_relative 'lib/omniauth/strategies/ldap'
 require_relative 'lib/ldap_user'
 
-# rubocop:disable Discourse/Plugins/NoMonkeyPatching
-class ::LDAPAuthenticator < ::Auth::Authenticator
-  def name
-    'ldap'
-  end
-
-  def enabled?
-    true
-  end
-
-  # =============================================================
-  # 1. GIRIS ISLEMI
-  # =============================================================
-  def after_authenticate(auth_options)
-    Rails.logger.warn("LDAP_LOG: === after_authenticate BASLADI (v4.1 Robust) ===")
-
-    # 1. Auth sonucunu al
-    result = auth_result(auth_options)
-
-    # Kullanici yoksa islem yapma
-    unless result.user
-      Rails.logger.warn("LDAP_LOG: Kullanici olusturulamadi (User=nil).")
-      return result
-    end
-
-    # 2. Veri Hazirligi (Guvenli Okuma)
-    if auth_options.extra && auth_options.extra[:raw_info]
-      raw = auth_options.extra[:raw_info]
-      
-      # Helper: Veriyi al, stringe cevir, bosluklari temizle
-      extract_val = ->(key) {
-        val = raw[key] || raw[key.to_s]
-        # Array ise ilkini al
-        final = val.respond_to?(:first) ? val.first : val
-        final.to_s.strip # String'e cevir ve temizle
-      }
-
-      # Custom Fields Guncelle
-      result.user.custom_fields['ldap_type']  = extract_val.call(:type)
-      result.user.custom_fields['ldap_minor'] = extract_val.call(:minor)
-      result.user.custom_fields['ldap_major'] = extract_val.call(:major)
-      
-      result.user.save_custom_fields
-      
-      # LOG: Tam olarak ne kaydettigimizi gorelim
-      Rails.logger.warn("LDAP_LOG: [Data] User: #{result.user.username}")
-      Rails.logger.warn("LDAP_LOG: [Data] Type: '#{result.user.custom_fields['ldap_type']}'")
-      Rails.logger.warn("LDAP_LOG: [Data] Minor: '#{result.user.custom_fields['ldap_minor']}'")
-      Rails.logger.warn("LDAP_LOG: [Data] Major: '#{result.user.custom_fields['ldap_major']}'")
-
-      # 3. GRUP SENKRONIZASYONU
-      sync_groups_based_on_rules(result.user)
-    else
-      Rails.logger.warn("LDAP_LOG: Raw info bulunamadi!")
-    end
-
-    Rails.logger.warn("LDAP_LOG: === after_authenticate BITTI ===")
-    result
-  end
-
-  # =============================================================
-  # 2. GRUP SENKRONIZASYON MANTIGI
-  # =============================================================
-  def sync_groups_based_on_rules(user)
-    Rails.logger.warn("LDAP_LOG: Grup kurallari kontrol ediliyor...")
+# =============================================================
+# GRUP SENKRONIZASYON MODULU (Ortak Kullanim Icin)
+# =============================================================
+module LDAPGroupSync
+  def self.sync(user)
+    Rails.logger.warn("LDAP_SYNC: [#{user.username}] Grup kurallari calistiriliyor...")
 
     u_type  = user.custom_fields['ldap_type']
     u_minor = user.custom_fields['ldap_minor']
@@ -125,47 +66,98 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
         unless group.users.include?(user)
           group.add(user)
           group.save
-          Rails.logger.warn("LDAP_LOG: [Group Sync] EKLE: #{user.username} -> #{rule[:group]}")
+          Rails.logger.warn("LDAP_SYNC: [EKLE] #{user.username} -> #{rule[:group]}")
         end
       end
     end
   end
 
-  # =============================================================
-  # CHECK MATCH: BUYUK/KUCUK HARF VE BOSLUK DUYARSIZ KARSILASTIRMA
-  # =============================================================
-  def check_match(user_value, allowed_list, excluded_list)
-    # Kural yoksa her seye uyumlu kabul et
+  def self.check_match(user_value, allowed_list, excluded_list)
     return true if allowed_list.nil? && excluded_list.nil?
-    
-    # Kullanici degeri bossa uyumsuz
     return false if user_value.nil?
-
-    # 1. Kullanici degerini normalize et (String, Kucuk harf, Strip)
-    # Gelen deger array de olabilir tek string de
     raw_values = user_value.is_a?(Array) ? user_value : [user_value]
     user_values_norm = raw_values.map { |v| v.to_s.downcase.strip }
-
-    # 2. Yasakli listesi kontrolu (Deny)
     if excluded_list
       excluded_norm = excluded_list.map { |v| v.to_s.downcase.strip }
-      # Kesisim kumesi bos degilse, yasakli bir deger var demektir -> FALSE
       return false unless (user_values_norm & excluded_norm).empty?
     end
-
-    # 3. Izin listesi kontrolu (Allow)
     if allowed_list
       allowed_norm = allowed_list.map { |v| v.to_s.downcase.strip }
-      # Kesisim kumesi bos ise, izin verilen hicbir deger yok demektir -> FALSE
       return false if (user_values_norm & allowed_norm).empty?
     end
-
     return true
   end
+end
 
-  # =============================================================
-  # 3. MIDDLEWARE CONFIG
-  # =============================================================
+# =============================================================
+# AUTHENTICATOR CLASS
+# =============================================================
+# rubocop:disable Discourse/Plugins/NoMonkeyPatching
+class ::LDAPAuthenticator < ::Auth::Authenticator
+  def name
+    'ldap'
+  end
+
+  def enabled?
+    true
+  end
+
+  def after_authenticate(auth_options)
+    Rails.logger.warn("LDAP_LOG: === after_authenticate (v5.0) ===")
+    
+    result = auth_result(auth_options)
+
+    # Veri Hazirligi
+    ldap_data = {}
+    if auth_options.extra && auth_options.extra[:raw_info]
+      raw = auth_options.extra[:raw_info]
+      extract_val = ->(key) {
+        val = raw[key] || raw[key.to_s]
+        final = val.respond_to?(:first) ? val.first : val
+        final.to_s.strip
+      }
+      ldap_data[:type]  = extract_val.call(:type)
+      ldap_data[:minor] = extract_val.call(:minor)
+      ldap_data[:major] = extract_val.call(:major)
+    end
+
+    # E-posta Force Fix
+    if result.email.nil? || result.email.empty?
+      Rails.logger.warn("LDAP_LOG: Email bos, manuel kurtariliyor...")
+      candidate = extract_val.call(:uemail) if extract_val
+      candidate ||= extract_val.call(:mail) if extract_val
+      
+      if candidate && !candidate.empty?
+        result.email = candidate
+        result.email_valid = true
+        Rails.logger.warn("LDAP_LOG: Email kurtarildi: #{result.email}")
+      end
+    end
+
+    if result.user
+      # 1. MEVCUT KULLANICI: Hemen işle
+      Rails.logger.warn("LDAP_LOG: Mevcut kullanici. Guncelleniyor...")
+      result.user.custom_fields['ldap_type']  = ldap_data[:type]
+      result.user.custom_fields['ldap_minor'] = ldap_data[:minor]
+      result.user.custom_fields['ldap_major'] = ldap_data[:major]
+      result.user.save_custom_fields
+      
+      LDAPGroupSync.sync(result.user)
+    else
+      # 2. YENI KULLANICI: Veriyi PluginStore'a sakla (Email anahtarı ile)
+      # Kullanici yaratildiginda (on user_created) bu veriyi kullanacagiz.
+      if result.email
+        Rails.logger.warn("LDAP_LOG: Yeni kullanici kaydi bekleniyor. Veriler PluginStore'a saklaniyor: #{result.email}")
+        PluginStore.set('ldap', "pending_#{result.email}", ldap_data)
+      else
+        Rails.logger.warn("LDAP_LOG: HATA! Email olmadigi icin veri saklanamadi.")
+      end
+    end
+
+    Rails.logger.warn("LDAP_LOG: === Bitti ===")
+    result
+  end
+
   def register_middleware(omniauth)
     omniauth.configure{ |c| c.form_css = File.read(File.expand_path("../css/form.css", __FILE__)) }
     omniauth.provider :ldap,
@@ -187,41 +179,48 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
 
   private
    
-  # =============================================================
-  # 4. AUTH RESULT (Calisan Kod)
-  # =============================================================
   def auth_result(auth)
     auth_info = auth.info
     extra_info = auth.extra || {}
     raw_info = extra_info[:raw_info] || {}
+    
+    # Raw Info Hash Cevirimi
+    if raw_info.respond_to?(:to_hash)
+       raw_info = raw_info.to_hash
+    end
 
     # Email Kurtarma
-    if (auth_info[:email].nil? || auth_info[:email].empty?) && raw_info['uemail']
-      Rails.logger.warn("LDAP: Standart email bos. 'uemail' alanindan veri kurtariliyor...")
-      ldap_mail = raw_info['uemail'].kind_of?(Array) ? raw_info['uemail'].first : raw_info['uemail']
-      if ldap_mail
-        auth_info[:email] = ldap_mail
-        Rails.logger.warn("LDAP: Email basariyla kurtarildi: #{ldap_mail}")
+    if (auth_info[:email].nil? || auth_info[:email].empty?)
+      uemail_val = raw_info['uemail'] || raw_info[:uemail]
+      if uemail_val
+        ldap_mail = uemail_val.kind_of?(Array) ? uemail_val.first : uemail_val
+        auth_info[:email] = ldap_mail if ldap_mail
       end
     end
-
-    case SiteSetting.ldap_user_create_mode
-      when 'none'
-        ldap_user = LDAPUser.new(auth_info)
-        ldap_user.account_exists? ? ldap_user.auth_result : fail_auth('User account does not exist.')
-      when 'list'
-        user_descriptions = load_user_descriptions
-        return fail_auth('List mode error.') if user_descriptions.nil?
-        match = user_descriptions.find { |ud|  auth_info[:email].casecmp(ud[:email]) == 0 }
-        return fail_auth('User not listed.') if match.nil?
-        match[:nickname] = match[:username] || auth_info[:nickname]
-        match[:name] = match[:name] || auth_info[:name]
-        LDAPUser.new(match).auth_result
-      when 'auto'
-        LDAPUser.new(auth_info).auth_result
-      else
-        fail_auth('Invalid option.')
+    
+    result = Auth::Result.new
+    if auth.info[:email] && user = User.find_by_email(auth.info[:email])
+        result.user = user
     end
+    
+    if result.user.nil?
+        case SiteSetting.ldap_user_create_mode
+        when 'auto'
+            result = LDAPUser.new(auth_info).auth_result
+        when 'none'
+            ldap_user = LDAPUser.new(auth_info)
+            ldap_user.account_exists? ? ldap_user.auth_result : fail_auth('User account does not exist.')
+        when 'list'
+             fail_auth('List mode not implemented.')
+        end
+    end
+    
+    if (result.email.nil? || result.email.empty?) && auth.info[:email]
+        result.email = auth.info[:email]
+        result.email_valid = true
+    end
+    
+    result
   end
 
   def fail_auth(reason)
@@ -248,3 +247,25 @@ register_css <<CSS
     }
   }
 CSS
+
+# =============================================================
+# EVENT LISTENER: YENI KULLANICI OLUSTUGUNDA TETIKLENIR
+# =============================================================
+on(:user_created) do |user|
+  # PluginStore'da bu email icin bekleyen LDAP verisi var mi?
+  if pending_data = PluginStore.get('ldap', "pending_#{user.email}")
+    Rails.logger.warn("LDAP_EVENT: Yeni kullanici (#{user.username}) icin bekleyen veri bulundu. Isleniyor...")
+    
+    user.custom_fields['ldap_type']  = pending_data[:type]
+    user.custom_fields['ldap_minor'] = pending_data[:minor]
+    user.custom_fields['ldap_major'] = pending_data[:major]
+    user.save_custom_fields
+    
+    # Gruplari Senkronize Et
+    LDAPGroupSync.sync(user)
+    
+    # Temizlik: Veriyi sil
+    PluginStore.remove('ldap', "pending_#{user.email}")
+    Rails.logger.warn("LDAP_EVENT: Islem tamamlandi ve gecici veri silindi.")
+  end
+end
