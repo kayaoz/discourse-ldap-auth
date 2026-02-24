@@ -11,7 +11,6 @@ gem 'rubyntlm', '0.3.4', require: false
 
 # EGER kconv veya nkf hatasi devam ederse diye onlemler:
 gem 'nkf', '0.2.0'
-gem 'kconv', '0.1.0'
 
 # =============================================================
 # GRUP SENKRONIZASYON MODULU (Ortak Kullanim Icin)
