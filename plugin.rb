@@ -1,51 +1,45 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with First-Login Group Sync (v5.0 - Fixed Init)
-# version: 5.0.1
+# about: A plugin to provide ldap authentication with ODTU Group Sync (Login-Only)
+# version: 6.0.2
+# authors: Jon Bake <jonmbake@gmail.com>, ODTU Customization
 
 enabled_site_setting :ldap_enabled
 
-gem 'net-ldap', '0.19.0' # 0.18.0'dan 0.19.0'a yukselttik
+# Ruby 3.4 Uyumlu Gem Surumleri (500 Hatasi Cozumu)
+gem 'net-ldap', '0.19.0'
 gem 'pyu-ruby-sasl', '0.0.3.3', require: false
 gem 'rubyntlm', '0.3.4', require: false
+gem 'omniauth-ldap', '2.2.0' # OmniAuth LDAP'in en guncel surumu!
 
-# EGER kconv veya nkf hatasi devam ederse diye onlemler:
-gem 'nkf', '0.2.0'
+require 'yaml'
+require_relative 'lib/omniauth-ldap/adaptor'
+require_relative 'lib/omniauth/strategies/ldap'
+require_relative 'lib/ldap_user'
 
 # =============================================================
-# GRUP SENKRONIZASYON MODULU (Ortak Kullanim Icin)
+# ODTU GRUP SENKRONIZASYON MODULU (AKILLI EKLEME/CIKARMA)
 # =============================================================
 module LDAPGroupSync
   def self.sync(user)
-    Rails.logger.warn("LDAP_SYNC: [#{user.username}] Grup kurallari calistiriliyor...")
-
     u_type  = user.custom_fields['ldap_type']
     u_minor = user.custom_fields['ldap_minor']
     u_major = user.custom_fields['ldap_major']
 
     rules = [
-      # OGRENCI GRUPLARI
       { group: "A-OGRENCI-DUYURU", type: { allow: [16, 4, 25] }, minor: nil, major: nil },
       { group: "LISANS-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['bs'] }, major: nil },
       { group: "YUKSEKLISANS-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['ms'] }, major: nil },
       { group: "DOKTORA-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['phd'] }, major: nil },
-      
-      # GENEL
       { group: "GENEL-DUYURU", type: nil, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
       { group: "GENEL-DUYURU", type: nil, minor: { allow: ['adm', 'dns'] }, major: { deny: ['eis'] } },
       { group: "GENEL-DUYURU", type: nil, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
-
-      # PERSONEL
       { group: "A-OGR-UYE-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
       { group: "A-OGR-ELM-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
       { group: "A-OGR-ELM-DUYURU", type: { deny: [27] }, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
-      
-      # TEKNIK
       { group: "T-OGR-UYE-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
       { group: "T-OGR-ELM-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
       { group: "T-OGR-ELM-DUYURU", type: { deny: [27] }, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
-
-      # DIGER
       { group: "ARAS-GOR-DUYURU", type: nil, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
       { group: "OGR-UYE-DUYURU", type: nil, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
       { group: "OGRENCI-DUYURU", type: { allow: [16, 4, 25, 26, 42] }, minor: nil, major: nil },
@@ -59,12 +53,17 @@ module LDAPGroupSync
       match_minor = check_match(u_minor, rule[:minor] ? rule[:minor][:allow] : nil, rule[:minor] ? rule[:minor][:deny] : nil)
       match_major = check_match(u_major, rule[:major] ? rule[:major][:allow] : nil, rule[:major] ? rule[:major][:deny] : nil)
 
+      group = Group.find_or_create_by(name: rule[:group])
+      
       if match_type && match_minor && match_major
-        group = Group.find_or_create_by(name: rule[:group])
         unless group.users.include?(user)
           group.add(user)
           group.save
-          Rails.logger.warn("LDAP_SYNC: [EKLE] #{user.username} -> #{rule[:group]}")
+        end
+      else
+        if group.users.include?(user)
+          group.remove(user)
+          group.save
         end
       end
     end
@@ -88,7 +87,7 @@ module LDAPGroupSync
 end
 
 # =============================================================
-# AUTHENTICATOR CLASS
+# AUTHENTICATOR
 # =============================================================
 # rubocop:disable Discourse/Plugins/NoMonkeyPatching
 class ::LDAPAuthenticator < ::Auth::Authenticator
@@ -98,61 +97,6 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
 
   def enabled?
     true
-  end
-
-  def after_authenticate(auth_options)
-    Rails.logger.warn("LDAP_LOG: === after_authenticate (v5.0.1) ===")
-    
-    result = auth_result(auth_options)
-
-    # Veri Hazirligi
-    ldap_data = {}
-    if auth_options.extra && auth_options.extra[:raw_info]
-      raw = auth_options.extra[:raw_info]
-      extract_val = ->(key) {
-        val = raw[key] || raw[key.to_s]
-        final = val.respond_to?(:first) ? val.first : val
-        final.to_s.strip
-      }
-      ldap_data[:type]  = extract_val.call(:type)
-      ldap_data[:minor] = extract_val.call(:minor)
-      ldap_data[:major] = extract_val.call(:major)
-    end
-
-    # E-posta Force Fix
-    if result.email.nil? || result.email.empty?
-      Rails.logger.warn("LDAP_LOG: Email bos, manuel kurtariliyor...")
-      candidate = extract_val.call(:uemail) if extract_val
-      candidate ||= extract_val.call(:mail) if extract_val
-      
-      if candidate && !candidate.empty?
-        result.email = candidate
-        result.email_valid = true
-        Rails.logger.warn("LDAP_LOG: Email kurtarildi: #{result.email}")
-      end
-    end
-
-    if result.user
-      # 1. MEVCUT KULLANICI: Hemen işle
-      Rails.logger.warn("LDAP_LOG: Mevcut kullanici. Guncelleniyor...")
-      result.user.custom_fields['ldap_type']  = ldap_data[:type]
-      result.user.custom_fields['ldap_minor'] = ldap_data[:minor]
-      result.user.custom_fields['ldap_major'] = ldap_data[:major]
-      result.user.save_custom_fields
-      
-      LDAPGroupSync.sync(result.user)
-    else
-      # 2. YENI KULLANICI: Veriyi PluginStore'a sakla (Email anahtarı ile)
-      if result.email
-        Rails.logger.warn("LDAP_LOG: Yeni kullanici kaydi bekleniyor. Veriler PluginStore'a saklaniyor: #{result.email}")
-        PluginStore.set('ldap', "pending_#{result.email}", ldap_data)
-      else
-        Rails.logger.warn("LDAP_LOG: HATA! Email olmadigi icin veri saklanamadi.")
-      end
-    end
-
-    Rails.logger.warn("LDAP_LOG: === Bitti ===")
-    result
   end
 
   def register_middleware(omniauth)
@@ -168,10 +112,66 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
           bind_dn: SiteSetting.ldap_bind_dn.presence || SiteSetting.try(:ldap_bind_db),
           password: SiteSetting.ldap_password,
           filter: SiteSetting.ldap_filter,
-          attributes: ['uid', 'cn', 'sn', 'mail', 'uemail', 'type', 'minor', 'major', 'memberof'],
+          attributes: ['uid', 'cn', 'sn', 'mail', 'uemail', 'type', 'minor', 'major', 'memberof', 'fname'],
           mapping: { email: 'uemail' }
         )
       }
+  end
+
+  def after_authenticate(auth_options)
+    result = auth_result(auth_options)
+
+    ldap_data = {}
+    if auth_options.extra && auth_options.extra[:raw_info]
+      raw = auth_options.extra[:raw_info]
+      extract_val = ->(key) {
+        val = raw[key] || raw[key.to_s]
+        final = val.respond_to?(:first) ? val.first : val
+        final.to_s.strip
+      }
+      ldap_data[:type]  = extract_val.call(:type)
+      ldap_data[:minor] = extract_val.call(:minor)
+      ldap_data[:major] = extract_val.call(:major)
+
+      ldap_name = extract_val.call(:cn)
+      if ldap_name.empty?
+        fname = extract_val.call(:fname)
+        sname = extract_val.call(:sn)
+        ldap_name = "#{fname} #{sname}".strip
+      end
+      ldap_data[:fullname] = ldap_name
+    end
+
+    if result.email.nil? || result.email.empty?
+      candidate = extract_val.call(:uemail) if extract_val
+      candidate ||= extract_val.call(:mail) if extract_val
+      if candidate && !candidate.empty?
+        result.email = candidate
+        result.email_valid = true
+      end
+    end
+
+    if result.user
+      result.user.custom_fields['ldap_type']  = ldap_data[:type]
+      result.user.custom_fields['ldap_minor'] = ldap_data[:minor]
+      result.user.custom_fields['ldap_major'] = ldap_data[:major]
+      result.user.save_custom_fields
+      
+      if ldap_data[:fullname] && !ldap_data[:fullname].empty?
+        if result.user.name != ldap_data[:fullname]
+          result.user.name = ldap_data[:fullname]
+          result.user.save
+        end
+      end
+      
+      LDAPGroupSync.sync(result.user)
+    else
+      if result.email
+        PluginStore.set('ldap', "pending_#{result.email}", ldap_data)
+      end
+    end
+
+    result
   end
 
   private
@@ -181,12 +181,10 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
     extra_info = auth.extra || {}
     raw_info = extra_info[:raw_info] || {}
     
-    # Raw Info Hash Cevirimi
     if raw_info.respond_to?(:to_hash)
        raw_info = raw_info.to_hash
     end
 
-    # Email Kurtarma
     if (auth_info[:email].nil? || auth_info[:email].empty?)
       uemail_val = raw_info['uemail'] || raw_info[:uemail]
       if uemail_val
@@ -226,12 +224,6 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
     result.failed_reason = reason
     result
   end
-
-  def load_user_descriptions
-    file_path = "#{File.expand_path(File.dirname(__FILE__))}/ldap_users.yml"
-    return nil unless File.exist?(file_path)
-    YAML.load_file(file_path)
-  end
 end
 # rubocop:enable Discourse/Plugins/NoMonkeyPatching
 
@@ -245,27 +237,21 @@ register_css <<CSS
   }
 CSS
 
-# =============================================================
-# EVENT LISTENER: YENI KULLANICI OLUSTUGUNDA TETIKLENIR
-# =============================================================
-# DIKKAT: Rebuild db:migrate asamasinin cokmemesi icin after_initialize icine alindi
 after_initialize do
   on(:user_created) do |user|
-    # PluginStore'da bu email icin bekleyen LDAP verisi var mi?
     if pending_data = PluginStore.get('ldap', "pending_#{user.email}")
-      Rails.logger.warn("LDAP_EVENT: Yeni kullanici (#{user.username}) icin bekleyen veri bulundu. Isleniyor...")
-      
       user.custom_fields['ldap_type']  = pending_data[:type]
       user.custom_fields['ldap_minor'] = pending_data[:minor]
       user.custom_fields['ldap_major'] = pending_data[:major]
       user.save_custom_fields
+
+      if pending_data[:fullname] && !pending_data[:fullname].empty?
+        user.name = pending_data[:fullname]
+        user.save
+      end
       
-      # Gruplari Senkronize Et
       LDAPGroupSync.sync(user)
-      
-      # Temizlik: Veriyi sil
       PluginStore.remove('ldap', "pending_#{user.email}")
-      Rails.logger.warn("LDAP_EVENT: Islem tamamlandi ve gecici veri silindi.")
     end
   end
 end
