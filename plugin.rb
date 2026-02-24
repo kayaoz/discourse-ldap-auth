@@ -10,7 +10,6 @@ enabled_site_setting :ldap_enabled
 gem 'net-ldap', '0.19.0'
 gem 'pyu-ruby-sasl', '0.0.3.3', require: false
 gem 'rubyntlm', '0.3.4', require: false
-gem 'omniauth-ldap', '2.2.0' # OmniAuth LDAP'in en guncel surumu!
 
 require 'yaml'
 require_relative 'lib/omniauth-ldap/adaptor'
