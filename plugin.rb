@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with First-Login Group Sync (v5.0)
-# version: 5.0.0
+# about: A plugin to provide ldap authentication with First-Login Group Sync (v5.0 - Fixed Init)
+# version: 5.0.1
 
 enabled_site_setting :ldap_enabled
 
@@ -103,7 +103,7 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
   end
 
   def after_authenticate(auth_options)
-    Rails.logger.warn("LDAP_LOG: === after_authenticate (v5.0) ===")
+    Rails.logger.warn("LDAP_LOG: === after_authenticate (v5.0.1) ===")
     
     result = auth_result(auth_options)
 
@@ -145,7 +145,6 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
       LDAPGroupSync.sync(result.user)
     else
       # 2. YENI KULLANICI: Veriyi PluginStore'a sakla (Email anahtarı ile)
-      # Kullanici yaratildiginda (on user_created) bu veriyi kullanacagiz.
       if result.email
         Rails.logger.warn("LDAP_LOG: Yeni kullanici kaydi bekleniyor. Veriler PluginStore'a saklaniyor: #{result.email}")
         PluginStore.set('ldap', "pending_#{result.email}", ldap_data)
@@ -251,21 +250,24 @@ CSS
 # =============================================================
 # EVENT LISTENER: YENI KULLANICI OLUSTUGUNDA TETIKLENIR
 # =============================================================
-on(:user_created) do |user|
-  # PluginStore'da bu email icin bekleyen LDAP verisi var mi?
-  if pending_data = PluginStore.get('ldap', "pending_#{user.email}")
-    Rails.logger.warn("LDAP_EVENT: Yeni kullanici (#{user.username}) icin bekleyen veri bulundu. Isleniyor...")
-    
-    user.custom_fields['ldap_type']  = pending_data[:type]
-    user.custom_fields['ldap_minor'] = pending_data[:minor]
-    user.custom_fields['ldap_major'] = pending_data[:major]
-    user.save_custom_fields
-    
-    # Gruplari Senkronize Et
-    LDAPGroupSync.sync(user)
-    
-    # Temizlik: Veriyi sil
-    PluginStore.remove('ldap', "pending_#{user.email}")
-    Rails.logger.warn("LDAP_EVENT: Islem tamamlandi ve gecici veri silindi.")
+# DIKKAT: Rebuild db:migrate asamasinin cokmemesi icin after_initialize icine alindi
+after_initialize do
+  on(:user_created) do |user|
+    # PluginStore'da bu email icin bekleyen LDAP verisi var mi?
+    if pending_data = PluginStore.get('ldap', "pending_#{user.email}")
+      Rails.logger.warn("LDAP_EVENT: Yeni kullanici (#{user.username}) icin bekleyen veri bulundu. Isleniyor...")
+      
+      user.custom_fields['ldap_type']  = pending_data[:type]
+      user.custom_fields['ldap_minor'] = pending_data[:minor]
+      user.custom_fields['ldap_major'] = pending_data[:major]
+      user.save_custom_fields
+      
+      # Gruplari Senkronize Et
+      LDAPGroupSync.sync(user)
+      
+      # Temizlik: Veriyi sil
+      PluginStore.remove('ldap', "pending_#{user.email}")
+      Rails.logger.warn("LDAP_EVENT: Islem tamamlandi ve gecici veri silindi.")
+    end
   end
 end
