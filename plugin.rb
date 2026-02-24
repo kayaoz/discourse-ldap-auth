@@ -5,14 +5,13 @@
 
 enabled_site_setting :ldap_enabled
 
+gem 'net-ldap', '0.19.0' # 0.18.0'dan 0.19.0'a yukselttik
 gem 'pyu-ruby-sasl', '0.0.3.3', require: false
 gem 'rubyntlm', '0.3.4', require: false
-gem 'net-ldap', '0.18.0'
 
-require 'yaml'
-require_relative 'lib/omniauth-ldap/adaptor'
-require_relative 'lib/omniauth/strategies/ldap'
-require_relative 'lib/ldap_user'
+# EGER kconv veya nkf hatasi devam ederse diye onlemler:
+gem 'nkf', '0.2.0'
+gem 'kconv', '0.1.0'
 
 # =============================================================
 # GRUP SENKRONIZASYON MODULU (Ortak Kullanim Icin)
