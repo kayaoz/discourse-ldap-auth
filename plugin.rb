@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name:ldap
 # about: A plugin to provide ldap authentication with ODTU Group Sync (Login-Only)
-# version: 6.0.2
+# version: 6.0.3
 # authors: Jon Bake <jonmbake@gmail.com>, ODTU Customization
 
 enabled_site_setting :ldap_enabled
