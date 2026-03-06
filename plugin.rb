@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with Background Group Sync & Silent Bulk Sync (v8.0 - Non-Parametric)
-# version: 8.0.0
+# about: A plugin to provide ldap authentication with Background Sync, Silent Bulk Sync & Privacy Lock (v8.1)
+# version: 8.1.0
 # authors: Jon Bake <jonmbake@gmail.com>, ODTU Customization
 
 enabled_site_setting :ldap_enabled
@@ -17,7 +17,7 @@ require_relative 'lib/omniauth/strategies/ldap'
 require_relative 'lib/ldap_user'
 
 # =============================================================
-# 1. ODTU GRUP SENKRONIZASYON MODULU (CEKIRDEK)
+# 1. ODTU GRUP SENKRONIZASYON MODULU (GİZLİLİK KORUMALI)
 # =============================================================
 module ::LDAPGroupSync
   def self.sync(user)
@@ -53,6 +53,16 @@ module ::LDAPGroupSync
       match_major = check_match(u_major, rule[:major] ? rule[:major][:allow] : nil, rule[:major] ? rule[:major][:deny] : nil)
 
       group = Group.find_or_create_by(name: rule[:group])
+
+      # --- GIZLILIK AYARI (Sadece Grup Üyeleri ve Yöneticiler Görebilir) ---
+      target_visibility = Group.visibility_levels[:members]
+      if group.visibility_level != target_visibility
+        group.update(
+          visibility_level: target_visibility,
+          members_visibility_level: target_visibility
+        )
+      end
+      # --------------------------------------------------------------------
       
       if match_type && match_minor && match_major
         unless group.users.include?(user)
