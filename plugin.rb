@@ -313,4 +313,82 @@ module LDAPBulkSync
       puts "Bağlantı başarılı. Test kullanıcıları çekiliyor..."
 
       # SADECE TEST KULLANICILARINI ICEREN OZEL FILTRE
-      filter_user1 = Net::LDAP::Filter.eq("uid
+      filter_user1 = Net::LDAP::Filter.eq("uid", "e203611")
+      filter_user2 = Net::LDAP::Filter.eq("uid", "e194173")
+      filter = filter_user1 | filter_user2
+
+      attrs = ['uid', 'cn', 'fname', 'sname', 'uemail', 'mail', 'type', 'minor', 'major']
+      
+      created_count = 0
+      updated_count = 0
+
+      ldap.search(base: base, filter: filter, attributes: attrs) do |entry|
+        uid = extract_val(entry, :uid)
+        email = extract_val(entry, :uemail).presence || extract_val(entry, :mail).presence
+        next if email.blank? || uid.blank?
+
+        user = User.find_by_email(email)
+        
+        if user.nil?
+          name = extract_val(entry, :cn).presence || "#{extract_val(entry, :fname)} #{extract_val(entry, :sname)}".strip.presence || uid
+          
+          begin
+            # Sessiz kayit islemi
+            user = User.new(
+              email: email,
+              username: UserNameSuggester.suggest(uid),
+              name: name,
+              active: true, # Hesap acik
+              approved: true, # Onayli
+              trust_level: 1 # Temel okuma yetkileri var
+            )
+            # Rastgele, kirilamaz bir sifre (Girisler zaten LDAP ile yapilacak)
+            user.password = SecureRandom.hex(20)
+            user.save!(validate: false)
+            
+            # E-posta adresini zorla dogrulanmis kabul et
+            unless user.email_tokens.exists?(email: email)
+              EmailToken.create!(email: email, user_id: user.id, confirmed: true)
+            end
+            
+            created_count += 1
+            puts "[YENI] #{email} eklendi."
+          rescue => e
+            puts "[HATA] #{email} olusturulamadi: #{e.message}"
+            next
+          end
+        else
+          updated_count += 1
+          puts "[MEVCUT] #{email} bulundu, guncelleniyor."
+        end
+
+        # Her durumda (Yeni veya Mevcut) verileri guncelle
+        user.custom_fields['ldap_type'] = extract_val(entry, :type)
+        user.custom_fields['ldap_minor'] = extract_val(entry, :minor)
+        user.custom_fields['ldap_major'] = extract_val(entry, :major)
+        user.save_custom_fields
+
+        # Bulk Sync aninda sunucuyu Sidekiq kuyruguna bogmamak icin dogrudan guncelleme yapiyoruz
+        LDAPGroupSync.sync(user)
+      end
+
+      puts "==========================================================="
+      puts "TEST İŞLEMİ BAŞARIYLA TAMAMLANDI!"
+      puts "Yeni Oluşturulan Kullanıcı: #{created_count}"
+      puts "Grupları Güncellenen/Kontrol Edilen Kullanıcı: #{updated_count}"
+      puts "Toplam İşlenen: #{created_count + updated_count}"
+      puts "==========================================================="
+
+    ensure
+      # HATA OLSA BİLE ESKİ AYARLARI KESİNLİKLE GERİ YÜKLE
+      SiteSetting.disable_emails = original_email_setting
+      SiteSetting.send_welcome_message = original_welcome_setting
+      puts "[GÜVENLİK] E-postalar ve Hoş Geldin mesajları tekrar AKTİF edildi."
+    end
+  end
+
+  def self.extract_val(entry, key)
+    val = entry[key]
+    val.is_a?(Array) ? val.first.to_s.strip : val.to_s.strip
+  end
+end
