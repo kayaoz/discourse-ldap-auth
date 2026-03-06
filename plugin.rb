@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with ODTU Group Sync (Login-Only)
-# version: 6.0.3
+# about: A plugin to provide ldap authentication with Background Group Sync & Silent Bulk Sync (v7.2-TEST)
+# version: 7.2.0
 # authors: Jon Bake <jonmbake@gmail.com>, ODTU Customization
 
 enabled_site_setting :ldap_enabled
 
-# Ruby 3.4 Uyumlu Gem Surumleri (500 Hatasi Cozumu)
+# Ruby 3.4.0 Uyumlu Gem Surumleri (500 Hatasi Cozumu)
 gem 'net-ldap', '0.19.0'
 gem 'pyu-ruby-sasl', '0.0.3.3', require: false
 gem 'rubyntlm', '0.3.4', require: false
@@ -17,7 +17,7 @@ require_relative 'lib/omniauth/strategies/ldap'
 require_relative 'lib/ldap_user'
 
 # =============================================================
-# ODTU GRUP SENKRONIZASYON MODULU (AKILLI EKLEME/CIKARMA)
+# 1. ODTU GRUP SENKRONIZASYON MODULU (CEKIRDEK)
 # =============================================================
 module LDAPGroupSync
   def self.sync(user)
@@ -86,7 +86,44 @@ module LDAPGroupSync
 end
 
 # =============================================================
-# AUTHENTICATOR
+# 2. SIDEKIQ ARKA PLAN GOREVLERI (Performans Icin)
+# =============================================================
+after_initialize do
+  module ::Jobs
+    class LdapGroupSync < ::Jobs::Base
+      def execute(args)
+        user = User.find_by(id: args[:user_id])
+        return unless user
+        
+        # Arka planda sessizce gruplari isle
+        ::LDAPGroupSync.sync(user)
+      end
+    end
+  end
+
+  # YENI KULLANICI OLUSTUGUNDA TETIKLENIR
+  on(:user_created) do |user|
+    if pending_data = PluginStore.get('ldap', "pending_#{user.email}")
+      user.custom_fields['ldap_type']  = pending_data[:type]
+      user.custom_fields['ldap_minor'] = pending_data[:minor]
+      user.custom_fields['ldap_major'] = pending_data[:major]
+      user.save_custom_fields
+
+      if pending_data[:fullname] && !pending_data[:fullname].empty?
+        user.name = pending_data[:fullname]
+        user.save
+      end
+      
+      # Islemi aninda yapmak yerine arka plana (Sidekiq) atiyoruz
+      Jobs.enqueue(:ldap_group_sync, user_id: user.id)
+      
+      PluginStore.remove('ldap', "pending_#{user.email}")
+    end
+  end
+end
+
+# =============================================================
+# 3. AUTHENTICATOR (GIRIS ISLEMI)
 # =============================================================
 # rubocop:disable Discourse/Plugins/NoMonkeyPatching
 class ::LDAPAuthenticator < ::Auth::Authenticator
@@ -111,7 +148,7 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
           bind_dn: SiteSetting.ldap_bind_dn.presence || SiteSetting.try(:ldap_bind_db),
           password: SiteSetting.ldap_password,
           filter: SiteSetting.ldap_filter,
-          attributes: ['uid', 'cn', 'sn', 'mail', 'uemail', 'type', 'minor', 'major', 'memberof', 'fname'],
+          attributes: ['uid', 'cn', 'sname', 'fname', 'mail', 'uemail', 'type', 'minor', 'major', 'memberof'],
           mapping: { email: 'uemail' }
         )
       }
@@ -135,7 +172,7 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
       ldap_name = extract_val.call(:cn)
       if ldap_name.empty?
         fname = extract_val.call(:fname)
-        sname = extract_val.call(:sn)
+        sname = extract_val.call(:sname)
         ldap_name = "#{fname} #{sname}".strip
       end
       ldap_data[:fullname] = ldap_name
@@ -151,6 +188,7 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
     end
 
     if result.user
+      # MEVCUT KULLANICI GUNCELLEMESI
       result.user.custom_fields['ldap_type']  = ldap_data[:type]
       result.user.custom_fields['ldap_minor'] = ldap_data[:minor]
       result.user.custom_fields['ldap_major'] = ldap_data[:major]
@@ -163,8 +201,10 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
         end
       end
       
-      LDAPGroupSync.sync(result.user)
+      # Islem Sidekiq'e devrediliyor (Giris suresi isik hizina cikarildi)
+      Jobs.enqueue(:ldap_group_sync, user_id: result.user.id)
     else
+      # YENI KULLANICI ICIN HAFIZAYA AL
       if result.email
         PluginStore.set('ldap', "pending_#{result.email}", ldap_data)
       end
@@ -236,21 +276,41 @@ register_css <<CSS
   }
 CSS
 
-after_initialize do
-  on(:user_created) do |user|
-    if pending_data = PluginStore.get('ldap', "pending_#{user.email}")
-      user.custom_fields['ldap_type']  = pending_data[:type]
-      user.custom_fields['ldap_minor'] = pending_data[:minor]
-      user.custom_fields['ldap_major'] = pending_data[:major]
-      user.save_custom_fields
+# =============================================================
+# 4. SESSİZ TOPLU SENKRONIZASYON (TEST MODU - SADECE 2 KULLANICI)
+# =============================================================
+module LDAPBulkSync
+  def self.run!
+    require 'net/ldap'
 
-      if pending_data[:fullname] && !pending_data[:fullname].empty?
-        user.name = pending_data[:fullname]
-        user.save
+    puts "==========================================================="
+    puts "TEST MODU: SADECE e203611 VE e194173 KULLANICILARI ÇEKİLECEK"
+    puts "==========================================================="
+
+    # --- E-POSTA VE HOŞ GELDİN MESAJLARINI GÜVENLİ ŞEKİLDE KAPATALIM ---
+    original_email_setting = SiteSetting.disable_emails
+    original_welcome_setting = SiteSetting.send_welcome_message
+    
+    puts "[GÜVENLİK] E-postalar ve Hoş Geldin Özel Mesajları (PM) geçici olarak DURDURULDU."
+    SiteSetting.disable_emails = "yes"
+    SiteSetting.send_welcome_message = false
+
+    begin
+      host = SiteSetting.ldap_hostname
+      port = SiteSetting.ldap_port.to_i
+      bind_dn = SiteSetting.ldap_bind_dn.presence || SiteSetting.try(:ldap_bind_db)
+      password = SiteSetting.ldap_password
+      base = SiteSetting.ldap_base
+
+      ldap = Net::LDAP.new(host: host, port: port, auth: { method: :simple, username: bind_dn, password: password })
+      ldap.encryption(method: :simple_tls) if port == 636
+
+      unless ldap.bind
+        puts "HATA: LDAP sunucusuna bağlanılamadı! (#{ldap.get_operation_result.message})"
+        return
       end
-      
-      LDAPGroupSync.sync(user)
-      PluginStore.remove('ldap', "pending_#{user.email}")
-    end
-  end
-end
+
+      puts "Bağlantı başarılı. Test kullanıcıları çekiliyor..."
+
+      # SADECE TEST KULLANICILARINI ICEREN OZEL FILTRE
+      filter_user1 = Net::LDAP::Filter.eq("uid
