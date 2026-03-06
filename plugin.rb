@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with Background Group Sync & Silent Bulk Sync (v8.0)
+# about: A plugin to provide ldap authentication with Background Group Sync & Silent Bulk Sync (v8.0 - Non-Parametric)
 # version: 8.0.0
 # authors: Jon Bake <jonmbake@gmail.com>, ODTU Customization
 
@@ -277,14 +277,14 @@ register_css <<CSS
 CSS
 
 # =============================================================
-# 4. SESSİZ TOPLU SENKRONIZASYON (TÜM KULLANICILAR İÇİN FİNAL)
+# 4. SESSİZ TOPLU SENKRONIZASYON (PARAMETRIK OLMAYAN SABIT VERSIYON)
 # =============================================================
 module ::LDAPBulkSync
   def self.run!
     require 'net/ldap'
 
     puts "==========================================================="
-    puts "ODTU LDAP SESSİZ TOPLU SENKRONİZASYON BAŞLATILIYOR (TÜM LİSTE)"
+    puts "ODTU LDAP SESSİZ TOPLU SENKRONİZASYON BAŞLATILIYOR"
     puts "==========================================================="
 
     original_email_setting = SiteSetting.disable_emails
@@ -318,9 +318,14 @@ module ::LDAPBulkSync
         return
       end
 
-      puts "Bağlantı başarılı. Tüm kullanıcılar çekiliyor (Bu işlem birkaç dakika sürebilir)..."
+      puts "Bağlantı başarılı. Kullanıcılar çekiliyor..."
 
-      filter = Net::LDAP::Filter.eq("uid", "e203611")
+      # -----------------------------------------------------------------
+      # DİKKAT: Test yapmak için aşağıdaki "*" işaretini spesifik 
+      # bir ID ile (örn: "e203611") değiştirip rebuild alabilirsiniz.
+      # -----------------------------------------------------------------
+      filter = Net::LDAP::Filter.eq("uid", "*")
+      
       attrs = ['uid', 'cn', 'fname', 'sname', 'uemail', 'mail', 'type', 'minor', 'major']
       
       created_count = 0
@@ -371,10 +376,9 @@ module ::LDAPBulkSync
       end
 
       puts "==========================================================="
-      puts "TOPLU İŞLEM BAŞARIYLA TAMAMLANDI!"
+      puts "İŞLEM BAŞARIYLA TAMAMLANDI!"
       puts "Yeni Oluşturulan Kullanıcı: #{created_count}"
       puts "Grupları Güncellenen/Kontrol Edilen Kullanıcı: #{updated_count}"
-      puts "Toplam İşlenen: #{created_count + updated_count}"
       puts "==========================================================="
 
     ensure
