@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with Background Group Sync & Silent Bulk Sync (v7.2-TEST)
-# version: 7.2.0
+# about: A plugin to provide ldap authentication with Background Group Sync & Silent Bulk Sync (v8.0)
+# version: 8.0.0
 # authors: Jon Bake <jonmbake@gmail.com>, ODTU Customization
 
 enabled_site_setting :ldap_enabled
@@ -19,7 +19,7 @@ require_relative 'lib/ldap_user'
 # =============================================================
 # 1. ODTU GRUP SENKRONIZASYON MODULU (CEKIRDEK)
 # =============================================================
-module LDAPGroupSync
+module ::LDAPGroupSync
   def self.sync(user)
     u_type  = user.custom_fields['ldap_type']
     u_minor = user.custom_fields['ldap_minor']
@@ -277,17 +277,16 @@ register_css <<CSS
 CSS
 
 # =============================================================
-# 4. SESSİZ TOPLU SENKRONIZASYON (TEST MODU - SADECE 2 KULLANICI)
+# 4. SESSİZ TOPLU SENKRONIZASYON (TÜM KULLANICILAR İÇİN FİNAL)
 # =============================================================
-module LDAPBulkSync
+module ::LDAPBulkSync
   def self.run!
     require 'net/ldap'
 
     puts "==========================================================="
-    puts "TEST MODU: SADECE e203611 VE e194173 KULLANICILARI ÇEKİLECEK"
+    puts "ODTU LDAP SESSİZ TOPLU SENKRONİZASYON BAŞLATILIYOR (TÜM LİSTE)"
     puts "==========================================================="
 
-    # --- E-POSTA VE HOŞ GELDİN MESAJLARINI GÜVENLİ ŞEKİLDE KAPATALIM ---
     original_email_setting = SiteSetting.disable_emails
     original_welcome_setting = SiteSetting.send_welcome_message
     
@@ -299,24 +298,29 @@ module LDAPBulkSync
       host = SiteSetting.ldap_hostname
       port = SiteSetting.ldap_port.to_i
       bind_dn = SiteSetting.ldap_bind_dn.presence || SiteSetting.try(:ldap_bind_db)
-      password = SiteSetting.ldap_password
+      password = SiteSetting.ldap_password || ""
       base = SiteSetting.ldap_base
 
-      ldap = Net::LDAP.new(host: host, port: port, auth: { method: :simple, username: bind_dn, password: password })
-      ldap.encryption(method: :simple_tls) if port == 636
+      ldap_args = { host: host, port: port }
+      
+      if port == 636 || port == 3269
+        ldap_args[:encryption] = { method: :simple_tls }
+      end
+
+      if bind_dn.present?
+        ldap_args[:auth] = { method: :simple, username: bind_dn, password: password }
+      end
+
+      ldap = Net::LDAP.new(ldap_args)
 
       unless ldap.bind
-        puts "HATA: LDAP sunucusuna bağlanılamadı! (#{ldap.get_operation_result.message})"
+        puts "HATA: LDAP sunucusuna bağlanılamadı! Sebep: #{ldap.get_operation_result.message}"
         return
       end
 
-      puts "Bağlantı başarılı. Test kullanıcıları çekiliyor..."
+      puts "Bağlantı başarılı. Tüm kullanıcılar çekiliyor (Bu işlem birkaç dakika sürebilir)..."
 
-      # SADECE TEST KULLANICILARINI ICEREN OZEL FILTRE
-      filter_user1 = Net::LDAP::Filter.eq("uid", "e203611")
-      filter_user2 = Net::LDAP::Filter.eq("uid", "e194173")
-      filter = filter_user1 | filter_user2
-
+      filter = Net::LDAP::Filter.eq("uid", "*")
       attrs = ['uid', 'cn', 'fname', 'sname', 'uemail', 'mail', 'type', 'minor', 'major']
       
       created_count = 0
@@ -333,20 +337,17 @@ module LDAPBulkSync
           name = extract_val(entry, :cn).presence || "#{extract_val(entry, :fname)} #{extract_val(entry, :sname)}".strip.presence || uid
           
           begin
-            # Sessiz kayit islemi
             user = User.new(
               email: email,
               username: UserNameSuggester.suggest(uid),
               name: name,
-              active: true, # Hesap acik
-              approved: true, # Onayli
-              trust_level: 1 # Temel okuma yetkileri var
+              active: true,
+              approved: true,
+              trust_level: 1
             )
-            # Rastgele, kirilamaz bir sifre (Girisler zaten LDAP ile yapilacak)
             user.password = SecureRandom.hex(20)
             user.save!(validate: false)
             
-            # E-posta adresini zorla dogrulanmis kabul et
             unless user.email_tokens.exists?(email: email)
               EmailToken.create!(email: email, user_id: user.id, confirmed: true)
             end
@@ -359,28 +360,24 @@ module LDAPBulkSync
           end
         else
           updated_count += 1
-          puts "[MEVCUT] #{email} bulundu, guncelleniyor."
         end
 
-        # Her durumda (Yeni veya Mevcut) verileri guncelle
         user.custom_fields['ldap_type'] = extract_val(entry, :type)
         user.custom_fields['ldap_minor'] = extract_val(entry, :minor)
         user.custom_fields['ldap_major'] = extract_val(entry, :major)
         user.save_custom_fields
 
-        # Bulk Sync aninda sunucuyu Sidekiq kuyruguna bogmamak icin dogrudan guncelleme yapiyoruz
-        LDAPGroupSync.sync(user)
+        ::LDAPGroupSync.sync(user)
       end
 
       puts "==========================================================="
-      puts "TEST İŞLEMİ BAŞARIYLA TAMAMLANDI!"
+      puts "TOPLU İŞLEM BAŞARIYLA TAMAMLANDI!"
       puts "Yeni Oluşturulan Kullanıcı: #{created_count}"
       puts "Grupları Güncellenen/Kontrol Edilen Kullanıcı: #{updated_count}"
       puts "Toplam İşlenen: #{created_count + updated_count}"
       puts "==========================================================="
 
     ensure
-      # HATA OLSA BİLE ESKİ AYARLARI KESİNLİKLE GERİ YÜKLE
       SiteSetting.disable_emails = original_email_setting
       SiteSetting.send_welcome_message = original_welcome_setting
       puts "[GÜVENLİK] E-postalar ve Hoş Geldin mesajları tekrar AKTİF edildi."
