@@ -320,7 +320,7 @@ module ::LDAPBulkSync
 
       puts "Bağlantı başarılı. Tüm kullanıcılar çekiliyor (Bu işlem birkaç dakika sürebilir)..."
 
-      filter = Net::LDAP::Filter.eq("uid", "*")
+      filter = Net::LDAP::Filter.eq("uid", "e203611")
       attrs = ['uid', 'cn', 'fname', 'sname', 'uemail', 'mail', 'type', 'minor', 'major']
       
       created_count = 0
