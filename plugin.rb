@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with Background Sync, Silent Bulk Sync & Privacy Lock (v8.1)
-# version: 8.1.0
+# about: A plugin to provide ldap authentication with Background Group Sync, Privacy Lock & Pilot Test Sync (v8.2)
+# version: 8.2.0
 # authors: Jon Bake <jonmbake@gmail.com>, ODTU Customization
 
 enabled_site_setting :ldap_enabled
@@ -105,13 +105,11 @@ after_initialize do
         user = User.find_by(id: args[:user_id])
         return unless user
         
-        # Arka planda sessizce gruplari isle
         ::LDAPGroupSync.sync(user)
       end
     end
   end
 
-  # YENI KULLANICI OLUSTUGUNDA TETIKLENIR
   on(:user_created) do |user|
     if pending_data = PluginStore.get('ldap', "pending_#{user.email}")
       user.custom_fields['ldap_type']  = pending_data[:type]
@@ -124,7 +122,6 @@ after_initialize do
         user.save
       end
       
-      # Islemi aninda yapmak yerine arka plana (Sidekiq) atiyoruz
       Jobs.enqueue(:ldap_group_sync, user_id: user.id)
       
       PluginStore.remove('ldap', "pending_#{user.email}")
@@ -198,7 +195,6 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
     end
 
     if result.user
-      # MEVCUT KULLANICI GUNCELLEMESI
       result.user.custom_fields['ldap_type']  = ldap_data[:type]
       result.user.custom_fields['ldap_minor'] = ldap_data[:minor]
       result.user.custom_fields['ldap_major'] = ldap_data[:major]
@@ -211,10 +207,8 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
         end
       end
       
-      # Islem Sidekiq'e devrediliyor (Giris suresi isik hizina cikarildi)
       Jobs.enqueue(:ldap_group_sync, user_id: result.user.id)
     else
-      # YENI KULLANICI ICIN HAFIZAYA AL
       if result.email
         PluginStore.set('ldap', "pending_#{result.email}", ldap_data)
       end
@@ -287,14 +281,14 @@ register_css <<CSS
 CSS
 
 # =============================================================
-# 4. SESSİZ TOPLU SENKRONIZASYON (PARAMETRIK OLMAYAN SABIT VERSIYON)
+# 4. SESSİZ TOPLU SENKRONIZASYON (PİLOT TEST VERSİYONU)
 # =============================================================
 module ::LDAPBulkSync
   def self.run!
     require 'net/ldap'
 
     puts "==========================================================="
-    puts "ODTU LDAP SESSİZ TOPLU SENKRONİZASYON BAŞLATILIYOR"
+    puts "ODTU LDAP SESSİZ SENKRONİZASYON BAŞLATILIYOR (PİLOT TEST)"
     puts "==========================================================="
 
     original_email_setting = SiteSetting.disable_emails
@@ -328,61 +322,79 @@ module ::LDAPBulkSync
         return
       end
 
-      puts "Bağlantı başarılı. Kullanıcılar çekiliyor..."
+      # -----------------------------------------------------------------
+      # ODTÜ PİLOT TEST LİSTESİ
+      # -----------------------------------------------------------------
+      test_uids = [
+        "leventb", "gdeniz", "euzuner", "ecimen", "bkubra", "keremk",
+        "ozdemiri", "rpolat", "ayberk", "erkunt", "aekmekci", "ozsar",
+        "mgir", "bakdemir", "hyamuc", "mteker", "ycansiz", "sati",
+        "eozkok", "tasker", "adiyaman", "canatali", "tbaykiz", "ozcaglar",
+        "erguls", "serkany", "burhanp", "gulserc", "aydiner", "adilga",
+        "hdemir", "gokcet", "ftoy", "okosar", "hderin", "altinova",
+        "ferman", "etas", "haydar", "cicek", "oelcin", "meleky",
+        "eliffile", "elmas", "cihany", "muhsinu", "gubari", "mduman",
+        "cengizt", "meral", "murata", "ahmet", "rabiak", "oznurc",
+        "sergin", "melekb", "ak", "syayla", "matalay", "yurda",
+        "eakman", "ulger", "yaseminy", "ozkocak", "eekoc", "karacan",
+        "saba", "yunus"
+      ]
 
-      # -----------------------------------------------------------------
-      # DİKKAT: Test yapmak için aşağıdaki "*" işaretini spesifik 
-      # bir ID ile (örn: "e203611") değiştirip rebuild alabilirsiniz.
-      # -----------------------------------------------------------------
-      filter = Net::LDAP::Filter.eq("uid", "*")
-      
+      puts "Bağlantı başarılı. Belirtilen #{test_uids.length} kullanıcı sırayla çekiliyor..."
+
       attrs = ['uid', 'cn', 'fname', 'sname', 'uemail', 'mail', 'type', 'minor', 'major']
       
       created_count = 0
       updated_count = 0
 
-      ldap.search(base: base, filter: filter, attributes: attrs) do |entry|
-        uid = extract_val(entry, :uid)
-        email = extract_val(entry, :uemail).presence || extract_val(entry, :mail).presence
-        next if email.blank? || uid.blank?
+      # Dizideki her bir kullanıcı için sırayla LDAP araması yap
+      test_uids.each do |target_uid|
+        filter = Net::LDAP::Filter.eq("uid", target_uid)
 
-        user = User.find_by_email(email)
-        
-        if user.nil?
-          name = extract_val(entry, :cn).presence || "#{extract_val(entry, :fname)} #{extract_val(entry, :sname)}".strip.presence || uid
+        ldap.search(base: base, filter: filter, attributes: attrs) do |entry|
+          uid = extract_val(entry, :uid)
+          email = extract_val(entry, :uemail).presence || extract_val(entry, :mail).presence
+          next if email.blank? || uid.blank?
+
+          user = User.find_by_email(email)
           
-          begin
-            user = User.new(
-              email: email,
-              username: UserNameSuggester.suggest(uid),
-              name: name,
-              active: true,
-              approved: true,
-              trust_level: 1
-            )
-            user.password = SecureRandom.hex(20)
-            user.save!(validate: false)
+          if user.nil?
+            name = extract_val(entry, :cn).presence || "#{extract_val(entry, :fname)} #{extract_val(entry, :sname)}".strip.presence || uid
             
-            unless user.email_tokens.exists?(email: email)
-              EmailToken.create!(email: email, user_id: user.id, confirmed: true)
+            begin
+              user = User.new(
+                email: email,
+                username: UserNameSuggester.suggest(uid),
+                name: name,
+                active: true,
+                approved: true,
+                trust_level: 1
+              )
+              user.password = SecureRandom.hex(20)
+              user.save!(validate: false)
+              
+              unless user.email_tokens.exists?(email: email)
+                EmailToken.create!(email: email, user_id: user.id, confirmed: true)
+              end
+              
+              created_count += 1
+              puts "[YENI] #{email} eklendi."
+            rescue => e
+              puts "[HATA] #{email} olusturulamadi: #{e.message}"
+              next
             end
-            
-            created_count += 1
-            puts "[YENI] #{email} eklendi."
-          rescue => e
-            puts "[HATA] #{email} olusturulamadi: #{e.message}"
-            next
+          else
+            updated_count += 1
+            puts "[MEVCUT] #{email} bulundu, guncelleniyor."
           end
-        else
-          updated_count += 1
+
+          user.custom_fields['ldap_type'] = extract_val(entry, :type)
+          user.custom_fields['ldap_minor'] = extract_val(entry, :minor)
+          user.custom_fields['ldap_major'] = extract_val(entry, :major)
+          user.save_custom_fields
+
+          ::LDAPGroupSync.sync(user)
         end
-
-        user.custom_fields['ldap_type'] = extract_val(entry, :type)
-        user.custom_fields['ldap_minor'] = extract_val(entry, :minor)
-        user.custom_fields['ldap_major'] = extract_val(entry, :major)
-        user.save_custom_fields
-
-        ::LDAPGroupSync.sync(user)
       end
 
       puts "==========================================================="
