@@ -336,7 +336,7 @@ module ::LDAPBulkSync
         "eliffile", "elmas", "cihany", "muhsinu", "gubari", "mduman",
         "cengizt", "meral", "murata", "ahmet", "rabiak", "oznurc",
         "sergin", "melekb", "ak", "syayla", "matalay", "yurda",
-        "eakman", "ulger", "yaseminy", "ozkocak", "eekoc", "karacan",
+        "eakman", "ulger", "yaseminy", "ozkocak", "eekoc", "karacan", "furkanm",
         "saba", "yunus"
       ]
 
