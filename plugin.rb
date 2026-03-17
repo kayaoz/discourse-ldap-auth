@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with Background Group Sync, Privacy Lock & Pilot Test Sync (v8.2)
-# version: 8.2.0
+# about: A plugin to provide ldap authentication with Background Group Sync, Privacy Lock & Pilot Test Sync (v8.3)
+# version: 8.3.0
 # authors: Jon Bake <jonmbake@gmail.com>, ODTU Customization
 
 enabled_site_setting :ldap_enabled
@@ -21,38 +21,46 @@ require_relative 'lib/ldap_user'
 # =============================================================
 module ::LDAPGroupSync
   def self.sync(user)
+    # Eger alanlar bos geliyorsa, custom_fields bossa islem yapma
     u_type  = user.custom_fields['ldap_type']
     u_minor = user.custom_fields['ldap_minor']
     u_major = user.custom_fields['ldap_major']
 
+    # DİKKAT: Discourse'ta grup 'name' alani kesinlikle KUCUK HARF olmak zorundadir.
     rules = [
-      { group: "A-OGRENCI-DUYURU", type: { allow: [16, 4, 25] }, minor: nil, major: nil },
-      { group: "LISANS-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['bs'] }, major: nil },
-      { group: "YUKSEKLISANS-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['ms'] }, major: nil },
-      { group: "DOKTORA-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['phd'] }, major: nil },
-      { group: "GENEL-DUYURU", type: nil, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
-      { group: "GENEL-DUYURU", type: nil, minor: { allow: ['adm', 'dns'] }, major: { deny: ['eis'] } },
-      { group: "GENEL-DUYURU", type: nil, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
-      { group: "A-OGR-UYE-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
-      { group: "A-OGR-ELM-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
-      { group: "A-OGR-ELM-DUYURU", type: { deny: [27] }, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
-      { group: "T-OGR-UYE-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
-      { group: "T-OGR-ELM-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
-      { group: "T-OGR-ELM-DUYURU", type: { deny: [27] }, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
-      { group: "ARAS-GOR-DUYURU", type: nil, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
-      { group: "OGR-UYE-DUYURU", type: nil, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
-      { group: "OGRENCI-DUYURU", type: { allow: [16, 4, 25, 26, 42] }, minor: nil, major: nil },
-      { group: "LISANSUSTU-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['ms', 'phd'] }, major: nil },
-      { group: "EMEKLI-DUYURU", type: { allow: [28] }, minor: nil, major: nil },
-      { group: "AKADEMIK-EMEKLI-DUYURU", type: { allow: [28] }, minor: { allow: ['aca'] }, major: nil }
+      { group: "a-ogrenci-duyuru", type: { allow: [16, 4, 25] }, minor: nil, major: nil },
+      { group: "lisans-duyuru", type: { allow: [16, 4, 25] }, minor: { allow: ['bs'] }, major: nil },
+      { group: "yukseklisans-duyuru", type: { allow: [16, 4, 25] }, minor: { allow: ['ms'] }, major: nil },
+      { group: "doktora-duyuru", type: { allow: [16, 4, 25] }, minor: { allow: ['phd'] }, major: nil },
+      { group: "genel-duyuru", type: nil, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
+      { group: "genel-duyuru", type: nil, minor: { allow: ['adm', 'dns'] }, major: { deny: ['eis'] } },
+      { group: "genel-duyuru", type: nil, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
+      { group: "a-ogr-uye-duyuru", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
+      { group: "a-ogr-elm-duyuru", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
+      { group: "a-ogr-elm-duyuru", type: { deny: [27] }, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
+      { group: "t-ogr-uye-duyuru", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
+      { group: "t-ogr-elm-duyuru", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
+      { group: "t-ogr-elm-duyuru", type: { deny: [27] }, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
+      { group: "aras-gor-duyuru", type: nil, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
+      { group: "ogr-uye-duyuru", type: nil, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
+      { group: "ogrenci-duyuru", type: { allow: [16, 4, 25, 26, 42] }, minor: nil, major: nil },
+      { group: "lisansustu-duyuru", type: { allow: [16, 4, 25] }, minor: { allow: ['ms', 'phd'] }, major: nil },
+      { group: "emekli-duyuru", type: { allow: [28] }, minor: nil, major: nil },
+      { group: "akademik-emekli-duyuru", type: { allow: [28] }, minor: { allow: ['aca'] }, major: nil }
     ]
+
+    assigned_groups = []
 
     rules.each do |rule|
       match_type  = check_match(u_type, rule[:type] ? rule[:type][:allow] : nil, rule[:type] ? rule[:type][:deny] : nil)
       match_minor = check_match(u_minor, rule[:minor] ? rule[:minor][:allow] : nil, rule[:minor] ? rule[:minor][:deny] : nil)
       match_major = check_match(u_major, rule[:major] ? rule[:major][:allow] : nil, rule[:major] ? rule[:major][:deny] : nil)
 
-      group = Group.find_or_create_by(name: rule[:group])
+      # Grubu bul, yoksa duzgun bir sekilde (Kucuk Name, Buyuk Full Name) yarat.
+      group = Group.find_by(name: rule[:group])
+      if group.nil?
+        group = Group.create!(name: rule[:group], full_name: rule[:group].upcase)
+      end
 
       # --- GIZLILIK AYARI (Sadece Grup Üyeleri ve Yöneticiler Görebilir) ---
       target_visibility = Group.visibility_levels[:members]
@@ -69,6 +77,7 @@ module ::LDAPGroupSync
           group.add(user)
           group.save
         end
+        assigned_groups << rule[:group].upcase
       else
         if group.users.include?(user)
           group.remove(user)
@@ -76,13 +85,19 @@ module ::LDAPGroupSync
         end
       end
     end
+
+    # Ekrana basarak verilerin gercekten islenip islenmedigini teyit edelim:
+    puts "   -> [SİSTEM] #{user.username} | Type: '#{u_type}', Minor: '#{u_minor}', Major: '#{u_major}'"
+    puts "   -> [ATANAN GRUPLAR] #{assigned_groups.empty? ? 'Hiçbir kurala uymadı' : assigned_groups.uniq.join(', ')}"
   end
 
   def self.check_match(user_value, allowed_list, excluded_list)
     return true if allowed_list.nil? && excluded_list.nil?
-    return false if user_value.nil?
+    return false if user_value.nil? || user_value.to_s.strip.empty?
+    
     raw_values = user_value.is_a?(Array) ? user_value : [user_value]
     user_values_norm = raw_values.map { |v| v.to_s.downcase.strip }
+    
     if excluded_list
       excluded_norm = excluded_list.map { |v| v.to_s.downcase.strip }
       return false unless (user_values_norm & excluded_norm).empty?
@@ -96,9 +111,16 @@ module ::LDAPGroupSync
 end
 
 # =============================================================
-# 2. SIDEKIQ ARKA PLAN GOREVLERI (Performans Icin)
+# 2. SIDEKIQ ARKA PLAN GOREVLERI & CUSTOM FIELD KAYITLARI
 # =============================================================
 after_initialize do
+  
+  # DİKKAT: Discourse'un bu degerleri veritabanina yazabilmesi icin 
+  # onceden sisteme kayit (Register) edilmeleri SARTTIR! (Eski surumde bu eksikti)
+  User.register_custom_field_type('ldap_type', :string)
+  User.register_custom_field_type('ldap_minor', :string)
+  User.register_custom_field_type('ldap_major', :string)
+
   module ::Jobs
     class LdapGroupSync < ::Jobs::Base
       def execute(args)
@@ -115,7 +137,7 @@ after_initialize do
       user.custom_fields['ldap_type']  = pending_data[:type]
       user.custom_fields['ldap_minor'] = pending_data[:minor]
       user.custom_fields['ldap_major'] = pending_data[:major]
-      user.save_custom_fields
+      user.save_custom_fields(true) # Zorla kaydet
 
       if pending_data[:fullname] && !pending_data[:fullname].empty?
         user.name = pending_data[:fullname]
@@ -198,7 +220,7 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
       result.user.custom_fields['ldap_type']  = ldap_data[:type]
       result.user.custom_fields['ldap_minor'] = ldap_data[:minor]
       result.user.custom_fields['ldap_major'] = ldap_data[:major]
-      result.user.save_custom_fields
+      result.user.save_custom_fields(true)
       
       if ldap_data[:fullname] && !ldap_data[:fullname].empty?
         if result.user.name != ldap_data[:fullname]
@@ -336,7 +358,7 @@ module ::LDAPBulkSync
         "eliffile", "elmas", "cihany", "muhsinu", "gubari", "mduman",
         "cengizt", "meral", "murata", "ahmet", "rabiak", "oznurc",
         "sergin", "melekb", "ak", "syayla", "matalay", "yurda",
-        "eakman", "ulger", "yaseminy", "ozkocak", "eekoc", "karacan", "furkanm",
+        "eakman", "ulger", "yaseminy", "ozkocak", "eekoc", "karacan",
         "saba", "yunus"
       ]
 
@@ -347,7 +369,6 @@ module ::LDAPBulkSync
       created_count = 0
       updated_count = 0
 
-      # Dizideki her bir kullanıcı için sırayla LDAP araması yap
       test_uids.each do |target_uid|
         filter = Net::LDAP::Filter.eq("uid", target_uid)
 
@@ -385,14 +406,16 @@ module ::LDAPBulkSync
             end
           else
             updated_count += 1
-            puts "[MEVCUT] #{email} bulundu, guncelleniyor."
+            puts "[MEVCUT] #{email} guncelleniyor."
           end
 
+          # Alinan degerleri gucuncelle ve ZORLA kaydet (true parametresi ile)
           user.custom_fields['ldap_type'] = extract_val(entry, :type)
           user.custom_fields['ldap_minor'] = extract_val(entry, :minor)
           user.custom_fields['ldap_major'] = extract_val(entry, :major)
-          user.save_custom_fields
+          user.save_custom_fields(true)
 
+          # Kullaniciyi gruba atamak uzere senkronizasyona gonder
           ::LDAPGroupSync.sync(user)
         end
       end
