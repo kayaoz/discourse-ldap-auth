@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with Background Group Sync, Privacy Lock & Pilot Test Sync (v8.4)
-# version: 8.4.0
+# about: A plugin to provide ldap authentication with Background Group Sync, Privacy Lock & Pilot Test Sync (v8.5)
+# version: 8.5.0
 # authors: Jon Bake <jonmbake@gmail.com>, ODTU Customization
 
 enabled_site_setting :ldap_enabled
@@ -17,13 +17,15 @@ require_relative 'lib/omniauth/strategies/ldap'
 require_relative 'lib/ldap_user'
 
 # =============================================================
-# 1. ODTU GRUP SENKRONIZASYON MODULU (MANTIK HATASI ÇÖZÜLDÜ)
+# 1. ODTU GRUP SENKRONIZASYON MODULU (KUSURSUZ MANTIK)
 # =============================================================
 module ::LDAPGroupSync
-  def self.sync(user)
-    u_type  = user.custom_fields['ldap_type']
-    u_minor = user.custom_fields['ldap_minor']
-    u_major = user.custom_fields['ldap_major']
+  # Degerleri RAM'den dogrudan almak icin parametreleri opsiyonel yaptik
+  def self.sync(user, u_type = nil, u_minor = nil, u_major = nil)
+    # Eger disaridan (Bulk Sync'den) RAM uzerinden deger gelmediyse DB'den okumayi dene
+    u_type  ||= user.custom_fields['ldap_type']
+    u_minor ||= user.custom_fields['ldap_minor']
+    u_major ||= user.custom_fields['ldap_major']
 
     rules = [
       { group: "a-ogrenci-duyuru", type: { allow: [16, 4, 25] }, minor: nil, major: nil },
@@ -47,13 +49,9 @@ module ::LDAPGroupSync
       { group: "akademik-emekli-duyuru", type: { allow: [28] }, minor: { allow: ['aca'] }, major: nil }
     ]
 
-    # Sistemdeki tüm LDAP gruplarının benzersiz bir listesini cikar
     all_managed_groups = rules.map { |r| r[:group] }.uniq
-    
-    # Kullanıcının eklenecegi grupların sepetini olustur
     target_groups = []
 
-    # Sepeti doldur
     rules.each do |rule|
       match_type  = check_match(u_type, rule[:type] ? rule[:type][:allow] : nil, rule[:type] ? rule[:type][:deny] : nil)
       match_minor = check_match(u_minor, rule[:minor] ? rule[:minor][:allow] : nil, rule[:minor] ? rule[:minor][:deny] : nil)
@@ -64,16 +62,19 @@ module ::LDAPGroupSync
       end
     end
 
-    target_groups.uniq! # Aynı gruba birden fazla kuraldan girmişse teke düşür.
+    target_groups.uniq!
 
-    # Şimdi listeyi uygula:
+    # Ekrana DEBUG ciktisini tam bu noktada basalim
+    puts "   -> [HESAPLAMA] #{user.username} | Type: '#{u_type}', Minor: '#{u_minor}', Major: '#{u_major}'"
+    puts "   -> [SEPET] Hedef Gruplar: #{target_groups.empty? ? 'YOK' : target_groups.join(', ')}"
+
     all_managed_groups.each do |group_name|
       group = Group.find_by(name: group_name)
       if group.nil?
         group = Group.create!(name: group_name, full_name: group_name.upcase)
       end
 
-      # GİZLİLİK AYARI (Sadece üyeler ve yöneticiler görebilir)
+      # GIZLILIK AYARI (Sadece Uyeler Gorebilir)
       target_visibility = Group.visibility_levels[:members]
       if group.visibility_level != target_visibility
         group.update(
@@ -82,59 +83,57 @@ module ::LDAPGroupSync
         )
       end
 
-      # Eğer bu grup sepetimizde varsa EKLE, yoksa ÇIKAR (Overwrite sorunu çözüldü)
       if target_groups.include?(group_name)
         unless group.users.include?(user)
           group.add(user)
-          group.save
         end
       else
         if group.users.include?(user)
           group.remove(user)
-          group.save
         end
       end
     end
-
-    # Ekrana basarak verilerin gercekten islenip islenmedigini teyit edelim:
-    puts "   -> [SİSTEM] #{user.username} | Type: '#{u_type}', Minor: '#{u_minor}', Major: '#{u_major}'"
-    puts "   -> [ATANAN GRUPLAR] #{target_groups.empty? ? 'Hiçbir kurala uymadı' : target_groups.map(&:upcase).join(', ')}"
   end
 
   def self.check_match(user_value, allowed_list, excluded_list)
+    # Eger rule kisminda o alan (type/minor/major) tamamen bos (nil) birakilmissa direkt GECER
     return true if allowed_list.nil? && excluded_list.nil?
-    return false if user_value.nil? || user_value.to_s.strip.empty?
     
-    raw_values = user_value.is_a?(Array) ? user_value : [user_value]
-    user_values_norm = raw_values.map { |v| v.to_s.downcase.strip }
-    
+    user_vals = Array(user_value).map { |v| v.to_s.downcase.strip }.reject(&:empty?)
+
+    # EGER KULLANICININ DEGERI Bossa (Yani u_major bos geldiyse)
+    if user_vals.empty?
+      # Rule icinde 'allow' varsa ve sen bos isen, iceri GIREMEZSIN
+      return false if allowed_list && !allowed_list.empty?
+      # Rule icinde sadece 'deny' varsa ve sen bos isen, yasakli degilsin demektir, ICERI GIRERSIN
+      return true
+    end
+
     if excluded_list
       excluded_norm = excluded_list.map { |v| v.to_s.downcase.strip }
-      return false unless (user_values_norm & excluded_norm).empty?
+      # Yasakli listeden biriyle kesisiyorsan KALIRSIN
+      return false unless (user_vals & excluded_norm).empty?
     end
+
     if allowed_list
       allowed_norm = allowed_list.map { |v| v.to_s.downcase.strip }
-      return false if (user_values_norm & allowed_norm).empty?
+      # Izin verilen listeden hicbiri sende yoksa KALIRSIN
+      return false if (user_vals & allowed_norm).empty?
     end
-    return true
+
+    true
   end
 end
 
 # =============================================================
-# 2. SIDEKIQ ARKA PLAN GOREVLERI & CUSTOM FIELD KAYITLARI
+# 2. SIDEKIQ ARKA PLAN GOREVLERI
 # =============================================================
 after_initialize do
-  
-  User.register_custom_field_type('ldap_type', :string)
-  User.register_custom_field_type('ldap_minor', :string)
-  User.register_custom_field_type('ldap_major', :string)
-
   module ::Jobs
     class LdapGroupSync < ::Jobs::Base
       def execute(args)
         user = User.find_by(id: args[:user_id])
         return unless user
-        
         ::LDAPGroupSync.sync(user)
       end
     end
@@ -153,7 +152,6 @@ after_initialize do
       end
       
       Jobs.enqueue(:ldap_group_sync, user_id: user.id)
-      
       PluginStore.remove('ldap', "pending_#{user.email}")
     end
   end
@@ -411,15 +409,22 @@ module ::LDAPBulkSync
             end
           else
             updated_count += 1
-            puts "[MEVCUT] #{email} kontrol ediliyor..."
+            puts "[MEVCUT] #{email} guncelleniyor."
           end
 
-          user.custom_fields['ldap_type'] = extract_val(entry, :type)
-          user.custom_fields['ldap_minor'] = extract_val(entry, :minor)
-          user.custom_fields['ldap_major'] = extract_val(entry, :major)
+          # LDAP'tan cekilen verileri RAM'de tut:
+          type_val = extract_val(entry, :type)
+          minor_val = extract_val(entry, :minor)
+          major_val = extract_val(entry, :major)
+
+          # Veritabanina da yazmayi dene (yedekleme amaciyla)
+          user.custom_fields['ldap_type'] = type_val
+          user.custom_fields['ldap_minor'] = minor_val
+          user.custom_fields['ldap_major'] = major_val
           user.save_custom_fields(true)
 
-          ::LDAPGroupSync.sync(user)
+          # MANTIGI KESINLIKLE CALISTIRMAK ICIN RAM'DEKI DEGERLERI DIREKT GONDER:
+          ::LDAPGroupSync.sync(user, type_val, minor_val, major_val)
         end
       end
 
