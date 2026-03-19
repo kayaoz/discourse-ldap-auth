@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with Background Group Sync, Privacy Lock & Pilot Test Sync (v8.5)
-# version: 8.5.0
+# about: A plugin to provide ldap authentication with Background Group Sync, Privacy Lock & Smart Match (v8.6)
+# version: 8.6.0
 # authors: Jon Bake <jonmbake@gmail.com>, ODTU Customization
 
 enabled_site_setting :ldap_enabled
@@ -17,16 +17,15 @@ require_relative 'lib/omniauth/strategies/ldap'
 require_relative 'lib/ldap_user'
 
 # =============================================================
-# 1. ODTU GRUP SENKRONIZASYON MODULU (KUSURSUZ MANTIK)
+# 1. ODTU GRUP SENKRONIZASYON MODULU (SMART MATCH - EXCEL UYUMLU)
 # =============================================================
 module ::LDAPGroupSync
-  # Degerleri RAM'den dogrudan almak icin parametreleri opsiyonel yaptik
   def self.sync(user, u_type = nil, u_minor = nil, u_major = nil)
-    # Eger disaridan (Bulk Sync'den) RAM uzerinden deger gelmediyse DB'den okumayi dene
     u_type  ||= user.custom_fields['ldap_type']
     u_minor ||= user.custom_fields['ldap_minor']
     u_major ||= user.custom_fields['ldap_major']
 
+    # EXCEL BİREBİR KURALLARI
     rules = [
       { group: "a-ogrenci-duyuru", type: { allow: [16, 4, 25] }, minor: nil, major: nil },
       { group: "lisans-duyuru", type: { allow: [16, 4, 25] }, minor: { allow: ['bs'] }, major: nil },
@@ -64,9 +63,8 @@ module ::LDAPGroupSync
 
     target_groups.uniq!
 
-    # Ekrana DEBUG ciktisini tam bu noktada basalim
     puts "   -> [HESAPLAMA] #{user.username} | Type: '#{u_type}', Minor: '#{u_minor}', Major: '#{u_major}'"
-    puts "   -> [SEPET] Hedef Gruplar: #{target_groups.empty? ? 'YOK' : target_groups.join(', ')}"
+    puts "   -> [SEPET] Hedef Gruplar: #{target_groups.empty? ? 'HICBIR GRUBA UYMADI' : target_groups.join(', ')}"
 
     all_managed_groups.each do |group_name|
       group = Group.find_by(name: group_name)
@@ -74,7 +72,7 @@ module ::LDAPGroupSync
         group = Group.create!(name: group_name, full_name: group_name.upcase)
       end
 
-      # GIZLILIK AYARI (Sadece Uyeler Gorebilir)
+      # GIZLILIK AYARI
       target_visibility = Group.visibility_levels[:members]
       if group.visibility_level != target_visibility
         group.update(
@@ -96,28 +94,23 @@ module ::LDAPGroupSync
   end
 
   def self.check_match(user_value, allowed_list, excluded_list)
-    # Eger rule kisminda o alan (type/minor/major) tamamen bos (nil) birakilmissa direkt GECER
     return true if allowed_list.nil? && excluded_list.nil?
     
-    user_vals = Array(user_value).map { |v| v.to_s.downcase.strip }.reject(&:empty?)
+    # Yeni Akilli Okuyucu: Virgullerle veya array olarak gelen her seyi ayiklar
+    user_vals = user_value.to_s.split(',').map(&:strip).map(&:downcase).reject(&:empty?)
 
-    # EGER KULLANICININ DEGERI Bossa (Yani u_major bos geldiyse)
     if user_vals.empty?
-      # Rule icinde 'allow' varsa ve sen bos isen, iceri GIREMEZSIN
       return false if allowed_list && !allowed_list.empty?
-      # Rule icinde sadece 'deny' varsa ve sen bos isen, yasakli degilsin demektir, ICERI GIRERSIN
       return true
     end
 
     if excluded_list
       excluded_norm = excluded_list.map { |v| v.to_s.downcase.strip }
-      # Yasakli listeden biriyle kesisiyorsan KALIRSIN
       return false unless (user_vals & excluded_norm).empty?
     end
 
     if allowed_list
       allowed_norm = allowed_list.map { |v| v.to_s.downcase.strip }
-      # Izin verilen listeden hicbiri sende yoksa KALIRSIN
       return false if (user_vals & allowed_norm).empty?
     end
 
@@ -126,9 +119,13 @@ module ::LDAPGroupSync
 end
 
 # =============================================================
-# 2. SIDEKIQ ARKA PLAN GOREVLERI
+# 2. SIDEKIQ ARKA PLAN GOREVLERI & CUSTOM FIELD KAYITLARI
 # =============================================================
 after_initialize do
+  User.register_custom_field_type('ldap_type', :string)
+  User.register_custom_field_type('ldap_minor', :string)
+  User.register_custom_field_type('ldap_major', :string)
+
   module ::Jobs
     class LdapGroupSync < ::Jobs::Base
       def execute(args)
@@ -197,8 +194,11 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
       raw = auth_options.extra[:raw_info]
       extract_val = ->(key) {
         val = raw[key] || raw[key.to_s]
-        final = val.respond_to?(:first) ? val.first : val
-        final.to_s.strip
+        if val.is_a?(Array)
+          val.map { |v| v.to_s.strip }.reject(&:empty?).join(',')
+        else
+          val.to_s.strip
+        end
       }
       ldap_data[:type]  = extract_val.call(:type)
       ldap_data[:minor] = extract_val.call(:minor)
@@ -297,8 +297,6 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
   end
 end
 # rubocop:enable Discourse/Plugins/NoMonkeyPatching
-
-auth_provider authenticator: LDAPAuthenticator.new
 
 register_css <<CSS
   .btn {
@@ -409,21 +407,18 @@ module ::LDAPBulkSync
             end
           else
             updated_count += 1
-            puts "[MEVCUT] #{email} guncelleniyor."
           end
 
-          # LDAP'tan cekilen verileri RAM'de tut:
+          # Yeni akilli okuyucu
           type_val = extract_val(entry, :type)
           minor_val = extract_val(entry, :minor)
           major_val = extract_val(entry, :major)
 
-          # Veritabanina da yazmayi dene (yedekleme amaciyla)
           user.custom_fields['ldap_type'] = type_val
           user.custom_fields['ldap_minor'] = minor_val
           user.custom_fields['ldap_major'] = major_val
           user.save_custom_fields(true)
 
-          # MANTIGI KESINLIKLE CALISTIRMAK ICIN RAM'DEKI DEGERLERI DIREKT GONDER:
           ::LDAPGroupSync.sync(user, type_val, minor_val, major_val)
         end
       end
@@ -443,6 +438,10 @@ module ::LDAPBulkSync
 
   def self.extract_val(entry, key)
     val = entry[key]
-    val.is_a?(Array) ? val.first.to_s.strip : val.to_s.strip
+    if val.is_a?(Array)
+      val.map { |v| v.to_s.strip }.reject(&:empty?).join(',')
+    else
+      val.to_s.strip
+    end
   end
 end
