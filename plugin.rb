@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with Background Group Sync, Privacy Lock & Smart Match (v8.6)
-# version: 8.6.0
+# about: A plugin to provide ldap authentication with Background Group Sync, Privacy Lock & Smart Match (v8.7)
+# version: 8.7.0
 # authors: Jon Bake <jonmbake@gmail.com>, ODTU Customization
 
 enabled_site_setting :ldap_enabled
@@ -17,7 +17,7 @@ require_relative 'lib/omniauth/strategies/ldap'
 require_relative 'lib/ldap_user'
 
 # =============================================================
-# 1. ODTU GRUP SENKRONIZASYON MODULU (SMART MATCH - EXCEL UYUMLU)
+# 1. ODTU GRUP SENKRONIZASYON MODULU (KURSUN GECIRMEZ EŞLEŞTİRME)
 # =============================================================
 module ::LDAPGroupSync
   def self.sync(user, u_type = nil, u_minor = nil, u_major = nil)
@@ -25,27 +25,27 @@ module ::LDAPGroupSync
     u_minor ||= user.custom_fields['ldap_minor']
     u_major ||= user.custom_fields['ldap_major']
 
-    # EXCEL BİREBİR KURALLARI
+    # EXCEL BİREBİR KURALLARI (Grup isimleri sisteminize uygun olarak BUYUK HARF yapildi)
     rules = [
-      { group: "a-ogrenci-duyuru", type: { allow: [16, 4, 25] }, minor: nil, major: nil },
-      { group: "lisans-duyuru", type: { allow: [16, 4, 25] }, minor: { allow: ['bs'] }, major: nil },
-      { group: "yukseklisans-duyuru", type: { allow: [16, 4, 25] }, minor: { allow: ['ms'] }, major: nil },
-      { group: "doktora-duyuru", type: { allow: [16, 4, 25] }, minor: { allow: ['phd'] }, major: nil },
-      { group: "genel-duyuru", type: nil, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
-      { group: "genel-duyuru", type: nil, minor: { allow: ['adm', 'dns'] }, major: { deny: ['eis'] } },
-      { group: "genel-duyuru", type: nil, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
-      { group: "a-ogr-uye-duyuru", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
-      { group: "a-ogr-elm-duyuru", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
-      { group: "a-ogr-elm-duyuru", type: { deny: [27] }, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
-      { group: "t-ogr-uye-duyuru", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
-      { group: "t-ogr-elm-duyuru", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
-      { group: "t-ogr-elm-duyuru", type: { deny: [27] }, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
-      { group: "aras-gor-duyuru", type: nil, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
-      { group: "ogr-uye-duyuru", type: nil, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
-      { group: "ogrenci-duyuru", type: { allow: [16, 4, 25, 26, 42] }, minor: nil, major: nil },
-      { group: "lisansustu-duyuru", type: { allow: [16, 4, 25] }, minor: { allow: ['ms', 'phd'] }, major: nil },
-      { group: "emekli-duyuru", type: { allow: [28] }, minor: nil, major: nil },
-      { group: "akademik-emekli-duyuru", type: { allow: [28] }, minor: { allow: ['aca'] }, major: nil }
+      { group: "A-OGRENCI-DUYURU", type: { allow: [16, 4, 25] }, minor: nil, major: nil },
+      { group: "LISANS-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['bs'] }, major: nil },
+      { group: "YUKSEKLISANS-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['ms'] }, major: nil },
+      { group: "DOKTORA-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['phd'] }, major: nil },
+      { group: "GENEL-DUYURU", type: nil, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
+      { group: "GENEL-DUYURU", type: nil, minor: { allow: ['adm', 'dns'] }, major: { deny: ['eis'] } },
+      { group: "GENEL-DUYURU", type: nil, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
+      { group: "A-OGR-UYE-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
+      { group: "A-OGR-ELM-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
+      { group: "A-OGR-ELM-DUYURU", type: { deny: [27] }, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
+      { group: "T-OGR-UYE-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
+      { group: "T-OGR-ELM-DUYURU", type: { deny: [27, 2, 3, 33] }, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
+      { group: "T-OGR-ELM-DUYURU", type: { deny: [27] }, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
+      { group: "ARAS-GOR-DUYURU", type: nil, minor: { allow: ['rsc'] }, major: { deny: ['eis'] } },
+      { group: "OGR-UYE-DUYURU", type: nil, minor: { allow: ['aca'] }, major: { deny: ['eis'] } },
+      { group: "OGRENCI-DUYURU", type: { allow: [16, 4, 25, 26, 42] }, minor: nil, major: nil },
+      { group: "LISANSUSTU-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['ms', 'phd'] }, major: nil },
+      { group: "EMEKLI-DUYURU", type: { allow: [28] }, minor: nil, major: nil },
+      { group: "AKADEMIK-EMEKLI-DUYURU", type: { allow: [28] }, minor: { allow: ['aca'] }, major: nil }
     ]
 
     all_managed_groups = rules.map { |r| r[:group] }.uniq
@@ -63,13 +63,22 @@ module ::LDAPGroupSync
 
     target_groups.uniq!
 
-    puts "   -> [HESAPLAMA] #{user.username} | Type: '#{u_type}', Minor: '#{u_minor}', Major: '#{u_major}'"
-    puts "   -> [SEPET] Hedef Gruplar: #{target_groups.empty? ? 'HICBIR GRUBA UYMADI' : target_groups.join(', ')}"
+    # Eger LDAP verisi bombos geliyorsa ekranda uyaralim
+    if u_type.to_s.strip.empty? && u_minor.to_s.strip.empty? && u_major.to_s.strip.empty?
+      puts "   -> [DİKKAT!] #{user.username} için LDAP verileri (Type/Minor/Major) BOŞ geldi! LDAP sunucusu veriyi gondermiyor olabilir."
+    else
+      puts "   -> [HESAPLAMA] #{user.username} | Type: '#{u_type}', Minor: '#{u_minor}', Major: '#{u_major}'"
+      puts "   -> [SEPET] Hedef Gruplar: #{target_groups.empty? ? 'HICBIR GRUBA UYMADI' : target_groups.join(', ')}"
+    end
 
     all_managed_groups.each do |group_name|
-      group = Group.find_by(name: group_name)
+      # Discourse'da grup aramasini buyuk/kucuk harf umursamadan kesin yap
+      group = Group.where('lower(name) = ?', group_name.downcase).first
+      
       if group.nil?
-        group = Group.create!(name: group_name, full_name: group_name.upcase)
+        # Discourse name kucuk harf ister, full_name gorseldir.
+        safe_name = group_name.downcase.gsub(/[^a-z0-9_-]/, '')
+        group = Group.create!(name: safe_name, full_name: group_name)
       end
 
       # GIZLILIK AYARI
@@ -81,6 +90,7 @@ module ::LDAPGroupSync
         )
       end
 
+      # Gruba Ekle / Cikar
       if target_groups.include?(group_name)
         unless group.users.include?(user)
           group.add(user)
@@ -96,7 +106,6 @@ module ::LDAPGroupSync
   def self.check_match(user_value, allowed_list, excluded_list)
     return true if allowed_list.nil? && excluded_list.nil?
     
-    # Yeni Akilli Okuyucu: Virgullerle veya array olarak gelen her seyi ayiklar
     user_vals = user_value.to_s.split(',').map(&:strip).map(&:downcase).reject(&:empty?)
 
     if user_vals.empty?
@@ -400,7 +409,6 @@ module ::LDAPBulkSync
               end
               
               created_count += 1
-              puts "[YENI] #{email} eklendi."
             rescue => e
               puts "[HATA] #{email} olusturulamadi: #{e.message}"
               next
@@ -409,7 +417,6 @@ module ::LDAPBulkSync
             updated_count += 1
           end
 
-          # Yeni akilli okuyucu
           type_val = extract_val(entry, :type)
           minor_val = extract_val(entry, :minor)
           major_val = extract_val(entry, :major)
