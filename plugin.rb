@@ -1,12 +1,11 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with Background Group Sync, Privacy Lock & Smart Match (v8.7)
-# version: 8.7.0
+# about: A plugin to provide ldap authentication with Background Group Sync, Privacy Lock & Smart Match (v8.8)
+# version: 8.8.0
 # authors: Jon Bake <jonmbake@gmail.com>, ODTU Customization
 
 enabled_site_setting :ldap_enabled
 
-# Ruby 3.4.0 Uyumlu Gem Surumleri
 gem 'net-ldap', '0.19.0'
 gem 'pyu-ruby-sasl', '0.0.3.3', require: false
 gem 'rubyntlm', '0.3.4', require: false
@@ -17,7 +16,7 @@ require_relative 'lib/omniauth/strategies/ldap'
 require_relative 'lib/ldap_user'
 
 # =============================================================
-# 1. ODTU GRUP SENKRONIZASYON MODULU (KURSUN GECIRMEZ EŞLEŞTİRME)
+# 1. ODTU GRUP SENKRONIZASYON MODULU 
 # =============================================================
 module ::LDAPGroupSync
   def self.sync(user, u_type = nil, u_minor = nil, u_major = nil)
@@ -25,7 +24,6 @@ module ::LDAPGroupSync
     u_minor ||= user.custom_fields['ldap_minor']
     u_major ||= user.custom_fields['ldap_major']
 
-    # EXCEL BİREBİR KURALLARI (Grup isimleri sisteminize uygun olarak BUYUK HARF yapildi)
     rules = [
       { group: "A-OGRENCI-DUYURU", type: { allow: [16, 4, 25] }, minor: nil, major: nil },
       { group: "LISANS-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['bs'] }, major: nil },
@@ -45,7 +43,9 @@ module ::LDAPGroupSync
       { group: "OGRENCI-DUYURU", type: { allow: [16, 4, 25, 26, 42] }, minor: nil, major: nil },
       { group: "LISANSUSTU-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['ms', 'phd'] }, major: nil },
       { group: "EMEKLI-DUYURU", type: { allow: [28] }, minor: nil, major: nil },
-      { group: "AKADEMIK-EMEKLI-DUYURU", type: { allow: [28] }, minor: { allow: ['aca'] }, major: nil }
+      
+      # 20 Karakter hatasini gidermek icin grubun kisa adi (handle) guncellendi
+      { group: "AKA-EMEKLI-DUYURU", type: { allow: [28] }, minor: { allow: ['aca'] }, major: nil }
     ]
 
     all_managed_groups = rules.map { |r| r[:group] }.uniq
@@ -63,25 +63,21 @@ module ::LDAPGroupSync
 
     target_groups.uniq!
 
-    # Eger LDAP verisi bombos geliyorsa ekranda uyaralim
     if u_type.to_s.strip.empty? && u_minor.to_s.strip.empty? && u_major.to_s.strip.empty?
-      puts "   -> [DİKKAT!] #{user.username} için LDAP verileri (Type/Minor/Major) BOŞ geldi! LDAP sunucusu veriyi gondermiyor olabilir."
+      puts "   -> [DİKKAT!] #{user.username} için LDAP verileri (Type/Minor/Major) BOŞ geldi!"
     else
       puts "   -> [HESAPLAMA] #{user.username} | Type: '#{u_type}', Minor: '#{u_minor}', Major: '#{u_major}'"
       puts "   -> [SEPET] Hedef Gruplar: #{target_groups.empty? ? 'HICBIR GRUBA UYMADI' : target_groups.join(', ')}"
     end
 
     all_managed_groups.each do |group_name|
-      # Discourse'da grup aramasini buyuk/kucuk harf umursamadan kesin yap
       group = Group.where('lower(name) = ?', group_name.downcase).first
       
       if group.nil?
-        # Discourse name kucuk harf ister, full_name gorseldir.
         safe_name = group_name.downcase.gsub(/[^a-z0-9_-]/, '')
         group = Group.create!(name: safe_name, full_name: group_name)
       end
 
-      # GIZLILIK AYARI
       target_visibility = Group.visibility_levels[:members]
       if group.visibility_level != target_visibility
         group.update(
@@ -90,7 +86,6 @@ module ::LDAPGroupSync
         )
       end
 
-      # Gruba Ekle / Cikar
       if target_groups.include?(group_name)
         unless group.users.include?(user)
           group.add(user)
@@ -316,7 +311,7 @@ register_css <<CSS
 CSS
 
 # =============================================================
-# 4. SESSİZ TOPLU SENKRONIZASYON (PİLOT TEST VERSİYONU)
+# 4. SESSİZ TOPLU SENKRONIZASYON
 # =============================================================
 module ::LDAPBulkSync
   def self.run!
