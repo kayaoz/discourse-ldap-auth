@@ -1,11 +1,12 @@
 # frozen_string_literal: true
 # name:ldap
-# about: A plugin to provide ldap authentication with Background Group Sync, Privacy Lock & Smart Match (v8.8)
-# version: 8.8.0
+# about: A plugin to provide ldap authentication with Background Group Sync, Privacy Lock & Smart Match (v8.9)
+# version: 8.9.0
 # authors: Jon Bake <jonmbake@gmail.com>, ODTU Customization
 
 enabled_site_setting :ldap_enabled
 
+# Ruby 3.4.0 Uyumlu Gem Surumleri
 gem 'net-ldap', '0.19.0'
 gem 'pyu-ruby-sasl', '0.0.3.3', require: false
 gem 'rubyntlm', '0.3.4', require: false
@@ -43,8 +44,6 @@ module ::LDAPGroupSync
       { group: "OGRENCI-DUYURU", type: { allow: [16, 4, 25, 26, 42] }, minor: nil, major: nil },
       { group: "LISANSUSTU-DUYURU", type: { allow: [16, 4, 25] }, minor: { allow: ['ms', 'phd'] }, major: nil },
       { group: "EMEKLI-DUYURU", type: { allow: [28] }, minor: nil, major: nil },
-      
-      # 20 Karakter hatasini gidermek icin grubun kisa adi (handle) guncellendi
       { group: "AKA-EMEKLI-DUYURU", type: { allow: [28] }, minor: { allow: ['aca'] }, major: nil }
     ]
 
@@ -301,6 +300,9 @@ class ::LDAPAuthenticator < ::Auth::Authenticator
   end
 end
 # rubocop:enable Discourse/Plugins/NoMonkeyPatching
+
+# İŞTE ÖNCEKİ SÜRÜMDE YANLIŞLIKLA SİLİNEN O KRİTİK SATIR:
+auth_provider authenticator: LDAPAuthenticator.new
 
 register_css <<CSS
   .btn {
